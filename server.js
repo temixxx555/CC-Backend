@@ -16,6 +16,7 @@ import fs from "fs";
 import { getAuth } from "firebase-admin/auth";
 import { Readable } from "stream"; // Add this for streaming Buffers
 import { error, log } from "console";
+import { setServers } from "dns";
 
 dotenv.config();
 
@@ -504,8 +505,8 @@ server.post("/update-profile", verifyJwt, (req, res) => {
 
         if (
           !hostname.includes(`${socialLinksArr[i]}.com`) &&
-          socialLinksArr[i] != "website"  &&
-          socialLinksArr[i] != "twitter"  
+          socialLinksArr[i] != "website" &&
+          socialLinksArr[i] != "twitter"
         ) {
           //return an error
           return res.status(403).json({
@@ -551,9 +552,27 @@ server.post("/create-blog", verifyJwt, (req, res) => {
 
   let { title, des, banner, tags, content, draft, id } = req.body;
   let isDraft = Boolean(draft);
-  if (!isDraft) {
-    // Validate each field before accessing .length
 
+  // Log request body for debugging
+  console.log("Request body:", req.body);
+
+  // Validate title
+  if (!title || !title.length) {
+    return res.status(403).json({ error: "You must provide a title" });
+  }
+
+  // Validate tags (apply to both draft and published blogs)
+  if (!Array.isArray(tags)) {
+    return res.status(403).json({ error: "Tags must be an array" });
+  }
+  if (!isDraft && (!tags.length || tags.length > 10)) {
+    return res.status(403).json({
+      error: "Provide 1-10 tags to publish the blog",
+    });
+  }
+
+  // Validate other fields for non-draft blogs
+  if (!isDraft) {
     if (!des || !des.length || des.length > 200) {
       return res.status(403).json({
         error: "You must provide a blog description under 200 characters",
@@ -564,51 +583,51 @@ server.post("/create-blog", verifyJwt, (req, res) => {
         error: "You must provide a blog banner to publish",
       });
     }
-    if (!content.blocks.length) {
-      // Assuming content is a object
+    if (!content || !content.blocks || !content.blocks.length) {
       return res.status(403).json({
         error: "You must provide blog content to publish",
       });
     }
-    if (!tags || !tags.length || tags.length > 10) {
-      return res.status(403).json({
-        error: "Provide 1-10 tags to publish the blog",
-      });
-    }
-  }
-  if (!title || !title.length) {
-    return res.status(403).json({ error: "You must provide a title " });
   }
 
-  tags = tags.map((tag) => tag.toLowerCase());
+  // Process tags (convert to lowercase, ensure it's an array)
+  const processedTags = Array.isArray(tags)
+    ? tags.map((tag) => tag.toLowerCase())
+    : [];
+
   let blog_id =
     id ||
     title
       .replace(/[^a-zA-Z0-9]/g, " ")
       .replace(/\s+/g, "-")
       .trim() + nanoid().substring(0, 7);
+
   if (id) {
+    // Update existing blog
     Blog.findOneAndUpdate(
       { blog_id },
-      { title, des, banner, content, tags, draft: draft ? draft : false }
+      { title, des, banner, content, tags: processedTags, draft: isDraft }
     )
       .then(() => {
         return res.status(200).json({ id: blog_id });
       })
       .catch((err) => {
+        console.error("Update Blog Error:", err);
         return res.status(500).json({ error: err.message });
       });
   } else {
+    // Create new blog
     let blog = new Blog({
       title,
       des,
       banner,
       content,
-      tags,
+      tags: processedTags,
       author: authorId,
       blog_id,
       draft: isDraft,
     });
+
     blog
       .save()
       .then(() => {
@@ -621,16 +640,18 @@ server.post("/create-blog", verifyJwt, (req, res) => {
             $push: { blogs: blog._id },
           }
         )
-          .then((user) => {
+          .then(() => {
             return res.status(200).json({ id: blog.blog_id });
           })
           .catch((err) => {
+            console.error("Update User Error:", err);
             return res
               .status(500)
               .json({ error: "Failed to update total post number" });
           });
       })
       .catch((err) => {
+        console.error("Save Blog Error:", err);
         return res.status(500).json({ error: err.message });
       });
   }
@@ -722,7 +743,7 @@ server.post("/isliked-by-user", verifyJwt, (req, res) => {
 //comments route
 server.post("/add-comment", verifyJwt, async (req, res) => {
   let user_id = req.user;
-  let { _id, comment, blog_author, replying_to } = req.body;
+  let { _id, comment, blog_author, replying_to, notification_id } = req.body;
 
   if (!comment.length) {
     return res
@@ -778,6 +799,14 @@ server.post("/add-comment", verifyJwt, async (req, res) => {
       await Comment.findByIdAndUpdate(replying_to, {
         $push: { children: commentFile._id },
       });
+      if (notification_id) {
+        Notification.findOneAndUpdate(
+          { _id: notification_id },
+          { reply: commentFile._id }
+        ).then((notification) => {
+          console.log("notification updated");
+        });
+      }
     }
 
     await new Notification(notificationObj).save();
@@ -864,9 +893,10 @@ const deleteComments = (_id) => {
       Notification.findOneAndDelete({ comment: _id }).then((notification) =>
         console.log("comment notification deleted ")
       );
-      Notification.findOneAndDelete({ reply: _id }).then((notification) =>
-        console.log("reply notification deleted ")
-      );
+      Notification.findOneAndUpdate(
+        { reply: _id },
+        { $unset: { reply: 1 } }
+      ).then((notification) => console.log("reply notification deleted "));
 
       Blog.findOneAndUpdate(
         { _id: comment.blog_id },
@@ -901,6 +931,156 @@ server.post("/delete-comment", verifyJwt, (req, res) => {
   });
 });
 
+//for notifications
+server.get("/new-notification", verifyJwt, (req, res) => {
+  let user_id = req.user;
+  Notification.exists({
+    notification_for: user_id,
+    seen: false,
+    user: { $ne: user_id },
+  })
+    .then((result) => {
+      if (result) {
+        return res.status(200).json({ new_notification_available: true });
+      } else {
+        return res.status(200).json({ new_notification_available: false });
+      }
+    })
+    .catch((err) => {
+      console.log(err.message);
+      return res.status(500).json({ error: err.message });
+    });
+});
+
+//get notifications
+server.post("/notifications", verifyJwt, (req, res) => {
+  let user_id = req.user;
+  let { page, filter, deletedDocCount } = req.body;
+  let maxLimit = 10;
+
+  let findQuery = { notification_for: user_id, user: { $ne: user_id } };
+  let skipDocs = (page - 1) * maxLimit;
+  if (filter != "all") {
+    findQuery.type = filter;
+  }
+  if (deletedDocCount) {
+    skipDocs -= deletedDocCount;
+  }
+  Notification.find(findQuery)
+    .skip(skipDocs)
+    .limit(maxLimit)
+    .populate("blog", "title blog_id")
+    .populate(
+      "user",
+      "personal_info.fullname personal_info.username personal_info.profile_img "
+    )
+    .populate("comment", "comment")
+    .populate("replied_on_comment", "comment")
+    .populate("reply", "comment")
+    .populate({
+      path: "reply",
+      populate: {
+        path: "commented_by",
+        select:
+          "personal_info.fullname personal_info.username personal_info.profile_img",
+      },
+    })
+    .sort({ createdAt: -1 })
+    .select("createdAt type seen reply")
+    .then((notifications) => {
+      Notification.updateMany(findQuery, { seen: true })
+        .skip(skipDocs)
+        .limit(maxLimit)
+        .then(() => console.log("notifications seen"));
+      return res.status(200).json({ notifications });
+    })
+    .catch((err) => {
+      return res.status(500).json({ error: err.message });
+    });
+});
+//count notifications
+server.post("/all-notifications-count", verifyJwt, (req, res) => {
+  let user_id = req.user;
+
+  let { filter } = req.body;
+  let findQuery = { notification_for: user_id, user: { $ne: user_id } };
+  if (filter != "all") {
+    findQuery.type = filter;
+  }
+  Notification.countDocuments(findQuery)
+    .then((count) => {
+      return res.status(200).json({ totalDocs: count });
+    })
+    .catch((err) => {
+      return res.status(500).json({ error: err.message });
+    });
+});
+
+//to manage blogs
+server.post("/user-written-blogs", verifyJwt, (req, res) => {
+  let user_id = req.user;
+  let { page, draft, query, deletedDocCount } = req.body;
+
+  let maxLimit = 5;
+  let skipDocs = (page - 1) * maxLimit;
+
+  if (deletedDocCount) {
+    skipDocs -= deletedDocCount;
+  }
+  Blog.find({ author: user_id, draft, title: new RegExp(query, "i") })
+    .skip(skipDocs)
+    .limit(maxLimit)
+    .sort({ publishedAt: -1 })
+    .select("title banner publishedAt blog_id activity des draft -_id")
+    .then((blogs) => {
+      return res.status(200).json({ blogs });
+    })
+    .catch((err) => {
+      return res.status(500).json({ error: err.message });
+    });
+});
+server.post("/user-written-blogs-count", verifyJwt, (req, res) => {
+  let user_id = req.user;
+
+  let { draft, query } = req.body;
+
+  Blog.countDocuments({
+    author: user_id,
+    draft,
+    title: new RegExp(query, "i"),
+  })
+    .then((count) => {
+      return res.status(200).json({ totalDocs: count });
+    })
+    .catch((err) => {
+      console.log(err.message);
+      return res.status(500).json({ error: err.message });
+    });
+});
+
+//delet blogs
+server.post("/delete-blog", verifyJwt, (req, res) => {
+  let user_id = req.user;
+  let { blog_id } = req.body;
+
+  Blog.findOneAndDelete({ blog_id })
+    .then((blog) => {
+      Notification.deleteMany({ blog: blog._id }).then((data) =>
+        console.log("notifications deleted")
+      );
+      Comment.deleteMany({ blog_id: blog._id }).then((data) =>
+        console.log("comments deleted")
+      );
+      User.findOneAndUpdate(
+        { _id: user_id },
+        { $pull: { blog: blog._id }, $inc: { "account_info.total_posts": -1 } }
+      ).then((user) => console.log("Blog Deleted"));
+      return res.status(202).json({ status: "done" });
+    })
+    .catch((err) => {
+      return res.status(500).json({ error: err.message });
+    });
+});
 // Connect to DB
 mongoose
   .connect(process.env.DB_LOCATION, { autoIndex: true })
