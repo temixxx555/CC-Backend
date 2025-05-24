@@ -46,7 +46,7 @@ let passwordRegex = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{6,20}$/;
 server.use(express.json());
 const allowedOrigins = [
   "http://localhost:5173", // Local development
-  "https://cc-iota-coral.vercel.app", // Production frontend (correct domain)
+  "https://campusconnect1.vercel.app", // Production frontend
 ];
 
 server.use(
@@ -61,6 +61,7 @@ server.use(
     },
     credentials: true, // If your app uses cookies or auth headers
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"], // Allowed HTTP methods
+    allowedHeaders: ["Content-Type", "Authorization"], // Allowed headers
   })
 );
 
