@@ -107,6 +107,12 @@ const generateUsername = async (email) => {
   isUsernameNotUnique ? (username += nanoid().substring(0, 5)) : "";
   return username;
 };
+
+
+//pping
+server.get("/ping", (req, res) => {
+  res.status(200).send("OK");
+});
 // Existing routes (signup, signin, google-auth) remain unchanged...
 server.post("/signup", (req, res) => {
   const { fullname, email, password } = req.body;
