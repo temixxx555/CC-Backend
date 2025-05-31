@@ -108,7 +108,6 @@ const generateUsername = async (email) => {
   return username;
 };
 
-
 //pping
 server.get("/ping", (req, res) => {
   res.status(200).send("OK");
@@ -339,6 +338,16 @@ server.post("/upload-image", upload.single("image"), async (req, res) => {
     res
       .status(500)
       .json({ error: "Failed to upload image", details: error.message });
+  }
+});
+
+//get all users count
+server.get("/all-users", async (req, res) => {
+  try {
+    const count = await User.countDocuments();
+    res.status(200).json({ count });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
   }
 });
 
