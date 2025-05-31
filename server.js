@@ -47,6 +47,7 @@ server.use(express.json());
 const allowedOrigins = [
   "http://localhost:5173", // Local development
   "https://campusconnect1.vercel.app", // Production frontend
+  "https://blogs-trends.vercel.app"
 ];
 
 server.use(
