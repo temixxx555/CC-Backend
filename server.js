@@ -46,8 +46,7 @@ let passwordRegex = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{6,20}$/;
 server.use(express.json());
 const allowedOrigins = [
   "http://localhost:5173", // Local development
-  "https://campusconnect1.vercel.app", // Production frontend
-  "https://blogs-trends.vercel.app"
+  "https://blogs-trends.vercel.app",
 ];
 
 server.use(
@@ -81,6 +80,8 @@ const formatDataToSend = (user) => {
     profile_img: user.personal_info.profile_img,
     username: user.personal_info.username,
     fullname: user.personal_info.fullname,
+    userId:user._id,
+    following:user.following,
   };
 };
 
@@ -96,6 +97,8 @@ const verifyJwt = (req, res, next) => {
       return res.status(403).json({ error: "Access token is invalid" });
     }
     req.user = user.id;
+    console.log(req.user);
+
     next();
   });
 };
@@ -467,6 +470,82 @@ server.post("/search-user", (req, res) => {
     .catch((err) => {
       return res.status(500).json({ error: err.message });
     });
+});
+
+//follow a user
+server.post("/follows/:id", verifyJwt, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userTomodify = await User.findById(id);
+    const currentUser = await User.findById(req.user);
+
+    if (id === req.user.toString()) {
+      return res
+        .status(400)
+        .json({ message: "You cant Follow/Unfollow yourself" });
+    }
+    if (!userTomodify || !currentUser) {
+      return res.status(400).json({ message: "User not found" });
+    }
+    const isFollowing = currentUser.following.includes(id);
+
+    if (isFollowing) {
+      //unfollow the user
+      await Promise.all([
+        User.findByIdAndUpdate(id, { $pull: { followers: req.user } }),
+        User.findByIdAndUpdate(req.user, { $pull: { following: id } }),
+      ]);
+
+      return res.status(200).json({following:false});
+    } else {
+      //follow the user
+      await Promise.all([
+        User.findByIdAndUpdate(id, { $addToSet: { followers: req.user } }),
+        User.findByIdAndUpdate(req.user, { $addToSet: { following: id } }),
+      ]);
+      await Notification.create({
+        type:"followed",
+        notification_for:id,
+        user:req.user,
+        seen:false
+      })
+
+      return res.status(200).json({following:true});
+    }
+  } catch (error) {
+    console.log(error.message);
+    return res.status(500).json({ message: error.message });
+  }
+});
+
+//get the following or followers
+server.get("/:username/:type", async (req, res) => {
+  try {
+    const { username, type } = req.params;
+
+    if (!["following","followers"].includes(type)) {
+      return res
+        .status(400)
+        .json({ message: "query should be following or followers" });
+    }
+
+    const user = await User.findOne({"personal_info.username":username}).populate({
+      select:"personal_info.profile_img personal_info.username personal_info.fullname -_id",
+      path: type,
+    });
+    if(!user){
+      return res.status(404).json({message:"User not found"})
+    }
+    const list = user[type];
+    if(!list){
+      return res.status(404).json({message:"No followers"})
+
+    }
+    return res.status(200).json( list );
+  } catch (error) {
+    console.log(error.message);
+    return res.status(500).json({ message: error.message });
+  }
 });
 
 // get user for useerProfile page
