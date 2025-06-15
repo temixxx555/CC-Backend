@@ -69,6 +69,16 @@ const userSchema = mongoose.Schema(
         },
       },
     },
+    streak: {
+      count: {
+        type: Number,
+        default: 0,
+      },
+      lastPostDate: {
+        type: String,
+        default: null,
+      },
+    },
     social_links: {
       youtube: {
         type: String,

@@ -80,8 +80,8 @@ const formatDataToSend = (user) => {
     profile_img: user.personal_info.profile_img,
     username: user.personal_info.username,
     fullname: user.personal_info.fullname,
-    userId:user._id,
-    following:user.following,
+    userId: user._id,
+    following: user.following,
   };
 };
 
@@ -97,7 +97,6 @@ const verifyJwt = (req, res, next) => {
       return res.status(403).json({ error: "Access token is invalid" });
     }
     req.user = user.id;
-    console.log(req.user);
 
     next();
   });
@@ -300,9 +299,6 @@ server.post("/change-password", verifyJwt, (req, res) => {
 // /upload-image route (unchanged from base64 approach)
 server.post("/upload-image", upload.single("image"), async (req, res) => {
   try {
-    console.log("Upload route hit");
-    console.log("req.file:", req.file);
-
     const image = req.file;
     if (!image) {
       console.log("No image file received");
@@ -496,7 +492,7 @@ server.post("/follows/:id", verifyJwt, async (req, res) => {
         User.findByIdAndUpdate(req.user, { $pull: { following: id } }),
       ]);
 
-      return res.status(200).json({following:false});
+      return res.status(200).json({ following: false });
     } else {
       //follow the user
       await Promise.all([
@@ -504,13 +500,13 @@ server.post("/follows/:id", verifyJwt, async (req, res) => {
         User.findByIdAndUpdate(req.user, { $addToSet: { following: id } }),
       ]);
       await Notification.create({
-        type:"followed",
-        notification_for:id,
-        user:req.user,
-        seen:false
-      })
+        type: "followed",
+        notification_for: id,
+        user: req.user,
+        seen: false,
+      });
 
-      return res.status(200).json({following:true});
+      return res.status(200).json({ following: true });
     }
   } catch (error) {
     console.log(error.message);
@@ -523,25 +519,27 @@ server.get("/:username/:type", async (req, res) => {
   try {
     const { username, type } = req.params;
 
-    if (!["following","followers"].includes(type)) {
+    if (!["following", "followers"].includes(type)) {
       return res
         .status(400)
         .json({ message: "query should be following or followers" });
     }
 
-    const user = await User.findOne({"personal_info.username":username}).populate({
-      select:"personal_info.profile_img personal_info.username personal_info.fullname -_id",
+    const user = await User.findOne({
+      "personal_info.username": username,
+    }).populate({
+      select:
+        "personal_info.profile_img personal_info.username personal_info.fullname -_id",
       path: type,
     });
-    if(!user){
-      return res.status(404).json({message:"User not found"})
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
     }
     const list = user[type];
-    if(!list){
-      return res.status(404).json({message:"No followers"})
-
+    if (!list) {
+      return res.status(404).json({ message: "No followers" });
     }
-    return res.status(200).json( list );
+    return res.status(200).json(list);
   } catch (error) {
     console.log(error.message);
     return res.status(500).json({ message: error.message });
@@ -661,11 +659,9 @@ server.post("/update-profile", verifyJwt, (req, res) => {
 });
 
 //to create the blog
-
 server.post("/create-blog", verifyJwt, (req, res) => {
   let authorId = req.user;
 
-  // Check if req.body exists
   if (!req.body) {
     return res.status(400).json({ error: "Request body is missing" });
   }
@@ -673,15 +669,10 @@ server.post("/create-blog", verifyJwt, (req, res) => {
   let { title, des, banner, tags, content, draft, id } = req.body;
   let isDraft = Boolean(draft);
 
-  // Log request body for debugging
-  console.log("Request body:", req.body);
-
-  // Validate title
   if (!title || !title.length) {
     return res.status(403).json({ error: "You must provide a title" });
   }
 
-  // Validate tags (apply to both draft and published blogs)
   if (!Array.isArray(tags)) {
     return res.status(403).json({ error: "Tags must be an array" });
   }
@@ -691,7 +682,6 @@ server.post("/create-blog", verifyJwt, (req, res) => {
     });
   }
 
-  // Validate other fields for non-draft blogs
   if (!isDraft) {
     if (!des || !des.length || des.length > 200) {
       return res.status(403).json({
@@ -710,75 +700,236 @@ server.post("/create-blog", verifyJwt, (req, res) => {
     }
   }
 
-  // Process tags (convert to lowercase, ensure it's an array)
-  const processedTags = Array.isArray(tags)
-    ? tags.map((tag) => tag.toLowerCase())
-    : [];
+  const today = new Date().toISOString().split("T")[0];
 
-  let blog_id =
-    id ||
-    title
-      .replace(/[^a-zA-Z0-9]/g, " ")
-      .replace(/\s+/g, "-")
-      .trim() + nanoid().substring(0, 7);
+  User.findById(authorId)
+    .then((user) => {
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
 
-  if (id) {
-    // Update existing blog
-    Blog.findOneAndUpdate(
-      { blog_id },
-      { title, des, banner, content, tags: processedTags, draft: isDraft }
-    )
-      .then(() => {
-        return res.status(200).json({ id: blog_id });
-      })
-      .catch((err) => {
-        console.error("Update Blog Error:", err);
-        return res.status(500).json({ error: err.message });
-      });
-  } else {
-    // Create new blog
-    let blog = new Blog({
-      title,
-      des,
-      banner,
-      content,
-      tags: processedTags,
-      author: authorId,
-      blog_id,
-      draft: isDraft,
-    });
+      let updatedStreak = user.streak || { count: 1, lastPostDate: today };
 
-    blog
-      .save()
-      .then(() => {
-        let incremental = isDraft ? 0 : 1;
+      if (!isDraft) {
+        const lastDate = user.streak?.lastPostDate;
+        const streakCount = user.streak?.count || 0;
 
-        User.findOneAndUpdate(
-          { _id: authorId },
+        if (lastDate == null) {
+          // First post ever
+          updatedStreak = {
+            count: 1,
+            lastPostDate: today,
+          };
+        } else {
+          const diffInDays = Math.floor(
+            (new Date(today) - new Date(lastDate)) / (1000 * 60 * 60 * 24)
+          );
+
+          if (diffInDays === 1) {
+            updatedStreak = {
+              count: streakCount + 1,
+              lastPostDate: today,
+            };
+          } else if (diffInDays === 0) {
+            updatedStreak = {
+              count: streakCount,
+              lastPostDate: today,
+            };
+          } else {
+            updatedStreak = {
+              count: 1,
+              lastPostDate: today,
+            };
+            console.log("Streak reset");
+          }
+        }
+      }
+      console.log(updatedStreak, "hit");
+
+      const processedTags = Array.isArray(tags)
+        ? tags.map((tag) => tag.toLowerCase())
+        : [];
+
+      let blog_id =
+        id ||
+        title
+          .replace(/[^a-zA-Z0-9]/g, " ")
+          .replace(/\s+/g, "-")
+          .trim() + nanoid().substring(0, 7);
+
+      if (id) {
+        // Update existing blog
+        Blog.findOneAndUpdate(
+          { blog_id },
           {
-            $inc: { "account_info.total_posts": incremental },
-            $push: { blogs: blog._id },
+            title,
+            des,
+            banner,
+            content,
+            tags: processedTags,
+            draft: isDraft,
           }
         )
           .then(() => {
-            return res.status(200).json({ id: blog.blog_id });
+            return res.status(200).json({ id: blog_id });
           })
           .catch((err) => {
-            console.error("Update User Error:", err);
-            return res
-              .status(500)
-              .json({ error: "Failed to update total post number" });
+            console.error("Update Blog Error:", err);
+            return res.status(500).json({ error: err.message });
           });
-      })
-      .catch((err) => {
-        console.error("Save Blog Error:", err);
-        return res.status(500).json({ error: err.message });
-      });
+      } else {
+        // Create new blog
+        let blog = new Blog({
+          title,
+          des,
+          banner,
+          content,
+          tags: processedTags,
+          author: authorId,
+          blog_id,
+          draft: isDraft,
+        });
+
+        blog
+          .save()
+          .then(() => {
+            let incremental = isDraft ? 0 : 1;
+
+            User.findOneAndUpdate(
+              { _id: authorId },
+              {
+                $inc: { "account_info.total_posts": incremental },
+                $push: { blogs: blog._id },
+                streak: updatedStreak,
+              }
+            )
+              .then(() => {
+                return res.status(200).json({ id: blog.blog_id });
+              })
+              .catch((err) => {
+                console.error("Update User Error:", err);
+                return res
+                  .status(500)
+                  .json({ error: "Failed to update user data" });
+              });
+          })
+          .catch((err) => {
+            console.error("Save Blog Error:", err);
+            return res.status(500).json({ error: err.message });
+          });
+      }
+    })
+    .catch((err) => {
+      console.error("Find User Error:", err);
+      return res.status(500).json({ error: "Failed to find user" });
+    });
+});
+
+//get streaks
+server.get("/streaks", verifyJwt, async (req, res) => {
+  try {
+    const userId = req.user;
+    const user = await User.findById(userId);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const streak = user.streak || { count: 0, lastPostDate: null };
+
+    // Message pools
+    const newUserMessages = [
+      "Let's light that streak 🔥 Start writing today!",
+      "You haven’t posted yet — your journey begins now! 🚀",
+      "No streak yet. One post is all it takes to start 💪",
+      "You’re one blog away from starting a streak 🌱",
+      "New here? Make your mark with your first post! ✨",
+    ];
+
+    const dayOneMessages = [
+      "Day 1! A solid beginning 💥 Keep going!",
+      "You've started your writing streak — awesome! ✍️",
+      "The first post is done. Momentum is everything 💡",
+      "You’re on the board — let’s keep that streak alive 🔄",
+      "Just the beginning. Tomorrow is Day 2 🔥",
+    ];
+
+    const ongoingMessages = [
+      "🔥 You're on a roll — {{count}} days straight!",
+      "Amazing! {{count}} days of consistent writing 💪",
+      "Keep the streak alive — Day {{count}} and counting 🚀",
+      "💯 You're crushing it with {{count}} consecutive days!",
+      "{{count}} days in. Your keyboard must be smoking! 🧠🔥",
+      "Consistency looks good on you! Day {{count}} 🧱",
+    ];
+
+    const brokenStreakMessages = [
+      "Oops, streak was broken. But today’s a fresh start 💡",
+      "Streak reset — no worries, you’re back on track! 🚴‍♂️",
+      "You missed a day, but your comeback starts now 💥",
+      "Every legend slips — the streak is yours to rebuild 🔁",
+      "Let’s get that streak going again. You’ve got this! 🛠️",
+    ];
+
+    // Message selector
+    const getRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+    let message;
+    if (!streak.count || streak.count === 0) {
+      message = getRandom(newUserMessages);
+    } else if (streak.count === 1) {
+      message = getRandom(dayOneMessages);
+    } else if (streak.count > 1) {
+      message = getRandom(ongoingMessages).replace("{{count}}", streak.count);
+    } else {
+      message = getRandom(brokenStreakMessages);
+    }
+
+    return res.status(200).json({ streak, message });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({ err: error.message });
+  }
+});
+
+//lederboard route
+server.get("/leaderboard", async (req, res) => {
+  try {
+    const type = req.query.type || "streak"; // Default to 'streak'
+    if (!["streak", "followers"].includes(type)) {
+      return res
+        .status(400)
+        .json({ error: "Invalid type. Use 'streak' or 'followers'." });
+    }
+    let users;
+    if (type === "streak") {
+      users = await User.find(
+        {},
+        "personal_info.fullname personal_info.username personal_info.profile_img streak.count"
+      )
+        .sort({ "streak.count": -1, "account_info.total_posts": -1 })
+        .limit(20);
+    } else if (type === "followers") {
+      users = await User.aggregate([
+        {
+          $project: {
+            fullname: "$personal_info.fullname",
+            username: "$personal_info.username",
+            profile_img: "$personal_info.profile_img",
+            followersCount: { $size: { $ifNull: ["$followers", []] } },
+          },
+        },
+        { $sort: { followersCount: -1, username: 1 } },
+        { $limit: 20 },
+      ]);
+    }
+
+    return res.status(200).json( users );
+  } catch (error) {
+    console.log(error);
+
+    return res.status(500).json({ error: error.message });
   }
 });
 
 //get the blogs to display
-
 server.post("/get-blog", (req, res) => {
   let { blog_id, draft, mode } = req.body;
 
@@ -1042,6 +1193,9 @@ server.post("/delete-comment", verifyJwt, (req, res) => {
   let { _id } = req.body;
 
   Comment.findOne({ _id }).then((comment) => {
+    if (!comment) {
+      return res.status(404).json({ error: "Comment not found" });
+    }
     if (user_id == comment.commented_by || user_id == comment.blog_author) {
       deleteComments(_id);
       return res.status(200).json({ status: "done" });
