@@ -15,8 +15,8 @@ import admin from "firebase-admin";
 import fs from "fs";
 import { getAuth } from "firebase-admin/auth";
 import { Readable } from "stream"; // Add this for streaming Buffers
-import { error, log } from "console";
-import { setServers } from "dns";
+import Challenge from "./Schema/Challenge.js";
+import { startOfWeek, endOfWeek } from "date-fns";
 
 dotenv.config();
 
@@ -832,7 +832,23 @@ server.get("/streaks", verifyJwt, async (req, res) => {
     const user = await User.findById(userId);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const streak = user.streak || { count: 0, lastPostDate: null };
+    let streak = user.streak || { count: 0, lastPostDate: null };
+    const today = new Date().toISOString().split("T")[0];
+
+    // If streak has expired, reset it
+    if (streak.lastPostDate) {
+      const diffInDays = Math.floor(
+        (new Date(today) - new Date(streak.lastPostDate)) /
+          (1000 * 60 * 60 * 24)
+      );
+
+      if (diffInDays > 1) {
+        streak = { count: 0, lastPostDate: streak.lastPostDate };
+
+        // Update user in DB
+        await User.findByIdAndUpdate(userId, { streak });
+      }
+    }
 
     // Message pools
     const newUserMessages = [
@@ -868,7 +884,6 @@ server.get("/streaks", verifyJwt, async (req, res) => {
       "Let’s get that streak going again. You’ve got this! 🛠️",
     ];
 
-    // Message selector
     const getRandom = (arr) => arr[Math.floor(Math.random() * arr.length)];
 
     let message;
@@ -898,14 +913,44 @@ server.get("/leaderboard", async (req, res) => {
         .status(400)
         .json({ error: "Invalid type. Use 'streak' or 'followers'." });
     }
+
     let users;
+
     if (type === "streak") {
-      users = await User.find(
+      const rawUsers = await User.find(
         {},
-        "personal_info.fullname personal_info.username personal_info.profile_img streak.count"
-      )
-        .sort({ "streak.count": -1, "account_info.total_posts": -1 })
-        .limit(20);
+        "personal_info.fullname personal_info.username personal_info.profile_img streak"
+      ).sort({ "streak.count": -1, "account_info.total_posts": -1 });
+
+      const today = new Date().toISOString().split("T")[0];
+
+      users = rawUsers
+        .map((user) => {
+          const lastDate = user.streak?.lastPostDate;
+          const count = user.streak?.count || 0;
+
+          const diffInDays = lastDate
+            ? Math.floor(
+                (new Date(today) - new Date(lastDate)) / (1000 * 60 * 60 * 24)
+              )
+            : Infinity;
+
+          // Only return streak if it's within 1 day
+          const validStreak =
+            diffInDays <= 1
+              ? { count, lastPostDate: lastDate }
+              : { count: 0, lastPostDate: lastDate };
+
+          return {
+            _id: user._id,
+            fullname: user.personal_info.fullname,
+            username: user.personal_info.username,
+            profile_img: user.personal_info.profile_img,
+            streak: validStreak,
+          };
+        })
+        .filter((user) => user.streak.count > 0)
+        .slice(0, 20);
     } else if (type === "followers") {
       users = await User.aggregate([
         {
@@ -921,10 +966,9 @@ server.get("/leaderboard", async (req, res) => {
       ]);
     }
 
-    return res.status(200).json( users );
+    return res.status(200).json(users);
   } catch (error) {
-    console.log(error);
-
+    console.error(error);
     return res.status(500).json({ error: error.message });
   }
 });
@@ -1332,7 +1376,7 @@ server.post("/user-written-blogs-count", verifyJwt, (req, res) => {
     });
 });
 
-//delet blogs
+//delete blogs
 server.post("/delete-blog", verifyJwt, (req, res) => {
   let user_id = req.user;
   let { blog_id } = req.body;
@@ -1355,6 +1399,151 @@ server.post("/delete-blog", verifyJwt, (req, res) => {
       return res.status(500).json({ error: err.message });
     });
 });
+
+//upload image competion
+server.post(
+  "/upload-image-competition",
+  verifyJwt,
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      const user_id = req.user; // assuming `verifyJwt` sets `req.user`
+
+      // Check if user already submitted this week
+      const start = startOfWeek(new Date(), { weekStartsOn: 1 }); // Monday
+      const end = endOfWeek(new Date(), { weekStartsOn: 1 });
+
+      const existing = await Challenge.findOne({
+        posted_by: user_id,
+        createdAt: { $gte: start, $lte: end },
+      });
+
+      if (existing) {
+        return res.status(400).json({
+          error: "You can only submit one photo per week.",
+        });
+      }
+      const image = req.file;
+      if (!image) {
+        return res.status(400).json({ error: "Image is required" });
+      }
+
+      const bufferStream = new Readable();
+      bufferStream.push(image.buffer);
+      bufferStream.push(null);
+
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: "user_images",
+          public_id: `user_${nanoid()}`,
+          transformation: [{ width: 500, height: 500, crop: "limit" }],
+        },
+        async (error, result) => {
+          if (error) {
+            console.error("Cloudinary Upload Error:", error);
+            return res.status(500).json({ error: "Upload failed" });
+          }
+
+          // Save to MongoDB
+          const newChallenge = new Challenge({
+            imageurl: result.secure_url,
+            posted_by: user_id,
+          });
+
+          await newChallenge.save();
+
+          return res.status(200).json({
+            message: "Image uploaded and saved successfully",
+            imageUrl: result.secure_url,
+          });
+        }
+      );
+
+      bufferStream.pipe(uploadStream);
+    } catch (error) {
+      console.error("Server Error:", error);
+      return res.status(500).json({ error: "Internal server error" });
+    }
+  }
+);
+
+server.get("/get-competition-images", async (req, res) => {
+  try {
+    const start = startOfWeek(new Date(), { weekStartsOn: 1 }); // Monday
+    const end = endOfWeek(new Date(), { weekStartsOn: 1 });
+    const challenges = await Challenge.find({
+      createdAt: { $gte: start, $lte: end },
+    })
+      .populate("posted_by", "personal_info.username personal_info.profile_img")
+      .sort({ createdAt: -1 });
+
+    return res.status(200).json({ challenges });
+  } catch (error) {
+    console.error("Error fetching competition images:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+//assign ranks
+server.post("/assign-ranks", async (req, res) => {
+  try {
+    const { ranks } = req.body; // frontend sends: { challengeId: rank }
+
+    if (!ranks || Object.keys(ranks).length === 0) {
+      return res.status(400).json({ error: "No ranks provided" });
+    }
+    const uniqueRanks = new Set(Object.values(ranks));
+    if (uniqueRanks.size !== Object.keys(ranks).length) {
+      return res.status(400).json({ error: "Duplicate ranks not allowed" });
+    }
+    const updates = Object.entries(ranks).map(([id, rank]) =>
+      Challenge.findByIdAndUpdate(id, { $set: { rank } })
+    );
+
+    await Promise.all(updates);
+
+    return res.status(200).json({ message: "Ranks assigned successfully" });
+  } catch (error) {
+    console.error("Error assigning ranks:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+//get the winners
+server.get("/get-winners", async (req, res) => {
+  try {
+    const start = startOfWeek(new Date(), { weekStartsOn: 1 }); // Monday
+    const end = endOfWeek(new Date(), { weekStartsOn: 1 });
+
+    const winners = await Challenge.find({
+      createdAt: { $gte: start, $lte: end },
+      rank: { $gt: 0 },
+    })
+      .sort({ rank: 1 })
+      .populate("posted_by", "personal_info.username personal_info.profile_img personal_info.fullname")
+      .limit(3); // Get top 3 winners
+
+    return res.status(200).json({ winners });
+  } catch (error) {
+    console.error("Error fetching winners:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+//get all time winners
+server.get("/all-time-winners", async (req, res) => {
+  try {
+    const winners = await Challenge.find({ rank: { $gt: 0 ,$lt:2} })
+      .sort({ rank: 1 })
+      .populate("posted_by", "personal_info.username personal_info.profile_img personal_info.fullname")
+      .limit(4); // Get top 3 winners
+
+    return res.status(200).json({ winners });
+  } catch (error) {
+    console.error("Error fetching all-time winners:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // Connect to DB
 mongoose
   .connect(process.env.DB_LOCATION, { autoIndex: true })
