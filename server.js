@@ -1770,7 +1770,13 @@ socketServer.listen(port, () => {
 
 const io = new SocketIoServer(socketServer, {
   cors: {
-    origin: process.env.VITE_CLIENT_DOMAIN || "http://localhost:3000",
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("CORS not allowed"));
+      }
+    },
     methods: ["GET", "POST"],
     credentials: true,
   },
