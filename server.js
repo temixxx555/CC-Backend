@@ -17,10 +17,14 @@ import { getAuth } from "firebase-admin/auth";
 import { Readable } from "stream"; // Add this for streaming Buffers
 import Challenge from "./Schema/Challenge.js";
 import { startOfWeek, endOfWeek } from "date-fns";
+import { Server as SocketIoServer } from "socket.io";
+import http from "http";
+import Messages from "./Schema/Messages.js";
 
 dotenv.config();
 
 const server = express();
+const socketServer = http.createServer(server);
 const port = process.env.PORT || 3000;
 
 const serviceAccountKey = {
@@ -459,6 +463,29 @@ server.post("/search-user", (req, res) => {
     .limit(50)
     .select(
       "personal_info.fullname personal_info.profile_img personal_info.username -_id"
+    )
+    .then((users) => {
+      return res.status(200).json({ users });
+    })
+    .catch((err) => {
+      return res.status(500).json({ error: err.message });
+    });
+});
+
+//search useers for messages because normal search user uses query
+server.post("/search-dm", verifyJwt, (req, res) => {
+  let { searchUser } = req.body;
+  if (!searchUser || !searchUser.length > 1) {
+    return res.status(400).json({ error: "Search query is required" });
+  }
+  // _id:{$ne:req.userId}
+  User.find({
+    _id: { $ne: req.user },
+    "personal_info.username": new RegExp(searchUser, "i"),
+  })
+    .limit(50)
+    .select(
+      "personal_info.fullname personal_info.profile_img personal_info.username _id"
     )
     .then((users) => {
       return res.status(200).json({ users });
@@ -1519,7 +1546,10 @@ server.get("/get-winners", async (req, res) => {
       rank: { $gt: 0 },
     })
       .sort({ rank: 1 })
-      .populate("posted_by", "personal_info.username personal_info.profile_img personal_info.fullname")
+      .populate(
+        "posted_by",
+        "personal_info.username personal_info.profile_img personal_info.fullname"
+      )
       .limit(3); // Get top 3 winners
 
     return res.status(200).json({ winners });
@@ -1532,9 +1562,12 @@ server.get("/get-winners", async (req, res) => {
 //get all time winners
 server.get("/all-time-winners", async (req, res) => {
   try {
-    const winners = await Challenge.find({ rank: { $gt: 0 ,$lt:2} })
+    const winners = await Challenge.find({ rank: { $gt: 0, $lt: 2 } })
       .sort({ rank: 1 })
-      .populate("posted_by", "personal_info.username personal_info.profile_img personal_info.fullname")
+      .populate(
+        "posted_by",
+        "personal_info.username personal_info.profile_img personal_info.fullname"
+      )
       .limit(4); // Get top 3 winners
 
     return res.status(200).json({ winners });
@@ -1544,12 +1577,269 @@ server.get("/all-time-winners", async (req, res) => {
   }
 });
 
+//get messages dm
+
+server.post("/get-messages", verifyJwt, async (req, res) => {
+  try {
+    const { id, isGroup = false } = req.body; // Add isGroup flag to differentiate
+    const user1 = new mongoose.Types.ObjectId(req.user); // Convert to ObjectId
+
+    // Validate inputs
+    if (!id) {
+      return res.status(400).json({ error: "Chat ID is required" });
+    }
+
+    let query;
+    if (isGroup) {
+      // Group chat: use room field
+      query = { room: id };
+    } else {
+      // Direct chat: use sender/recipient
+      const user2 = mongoose.isValidObjectId(id)
+        ? new mongoose.Types.ObjectId(id)
+        : null;
+      if (!user2) {
+        return res.status(400).json({ error: "Invalid user ID" });
+      }
+
+      // Mark direct messages as read
+      await Messages.updateMany(
+        { recipient: user1, sender: user2, isRead: false },
+        { isRead: true }
+      );
+
+      query = {
+        $or: [
+          { sender: user1, recipient: user2 },
+          { sender: user2, recipient: user1 },
+        ],
+      };
+    }
+
+    // Fetch messages
+    const messages = await Messages.find(query)
+      .populate(
+        "sender",
+        "personal_info.username personal_info.profile_img personal_info.fullname"
+      )
+      .sort({ createdAt: 1 })
+      .limit(req.body.limit || 50) // Default limit of 50 messages
+      .skip(req.body.skip || 0); // Support pagination
+
+    return res.status(200).json({ messages });
+  } catch (error) {
+    console.error("Error fetching messages:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+//get the contacts
+server.post("/get-contacts", verifyJwt, async (req, res) => {
+  try {
+    let user1 = req.user;
+    user1 = new mongoose.Types.ObjectId(user1);
+
+    const contacts = await Messages.aggregate([
+      {
+        $match: {
+          $or: [{ sender: user1 }, { recipient: user1 }],
+        },
+      },
+      { $sort: { createdAt: -1 } },
+      {
+        $group: {
+          _id: {
+            $cond: [{ $eq: ["$sender", user1] }, "$recipient", "$sender"],
+          },
+          lastMessageTime: { $first: "$createdAt" },
+          lastMessage: { $first: "$content" },
+        },
+      },
+      {
+        $lookup: {
+          from: "users",
+          localField: "_id",
+          foreignField: "_id",
+          as: "contactInfo",
+        },
+      },
+      { $unwind: "$contactInfo" },
+      {
+        $lookup: {
+          from: "messages",
+          let: { contactId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$sender", "$$contactId"] },
+                    { $eq: ["$recipient", user1] },
+                    { $eq: ["$isRead", false] },
+                  ],
+                },
+              },
+            },
+            { $count: "unreadCount" },
+          ],
+          as: "unreadData",
+        },
+      },
+      {
+        $addFields: {
+          unreadCount: {
+            $ifNull: [{ $arrayElemAt: ["$unreadData.unreadCount", 0] }, 0],
+          },
+        },
+      },
+      {
+        $project: {
+          _id: 1,
+          lastMessageTime: 1,
+          lastMessage: 1,
+          unreadCount: 1,
+          email: "$contactInfo.personal_info.email",
+          firstName: "$contactInfo.personal_info.fullname",
+          profileImage: "$contactInfo.personal_info.profile_img",
+          username: "$contactInfo.personal_info.username",
+          lastSeen: "$contactInfo.lastSeen",
+        },
+      },
+      { $sort: { lastMessageTime: -1 } },
+    ]);
+
+    // ✅ Append online status from socket map
+    contacts.forEach((contact) => {
+      contact.online = userSocketMap.has(contact._id.toString());
+    });
+
+    return res.status(200).json({ contacts });
+  } catch (error) {
+    console.error("get-contacts error:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+// server.post("/broadcast-message", verifyJwt, async (req, res) => {
+//   try {
+//     const adminId = req.user; // must be an admin
+//     const { message } = req.body;
+
+//     if (!message || message.trim() === "") {
+//       return res.status(400).json({ error: "Message content is required" });
+//     }
+
+//     const users = await User.find({ _id: { $ne: adminId } }).select("_id");
+
+//     const batchSize = 500;
+//     for (let i = 0; i < users.length; i += batchSize) {
+//       const batch = users.slice(i, i + batchSize);
+
+//       const messagesToInsert = batch.map((user) => ({
+//         sender: adminId,
+//         recipient: user._id,
+//         content: message,
+//         messageType: "text",
+//         isRead: false,
+//         createdAt: new Date(),
+//       }));
+
+//       await Messages.insertMany(messagesToInsert);
+//     }
+
+//     return res.status(200).json({ message: "Broadcast sent to all users." });
+//   } catch (error) {
+//     console.error("Broadcast error:", error);
+//     return res.status(500).json({ error: "Internal server error" });
+//   }
+// });
+
 // Connect to DB
+
+//
+
 mongoose
   .connect(process.env.DB_LOCATION, { autoIndex: true })
   .then(() => console.log("Database connected successfully"))
   .catch((err) => console.error("Database connection error:", err));
 
-server.listen(port, () => {
+socketServer.listen(port, () => {
   console.log(`Server is running on port ${port}`);
+});
+
+const io = new SocketIoServer(socketServer, {
+  cors: {
+    origin: process.env.VITE_CLIENT_DOMAIN || "http://localhost:3000",
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
+});
+
+const userSocketMap = new Map();
+
+const disconnect = async (socket) => {
+  console.log(`Client Disconnected: ${socket.id}`);
+  for (const [userId, socketId] of userSocketMap.entries()) {
+    if (socketId === socket.id) {
+      userSocketMap.delete(userId);
+      await User.findByIdAndUpdate(userId, { lastSeen: new Date() });
+      break;
+    }
+  }
+};
+const sendMessage = async (message) => {
+  const senderSocketId = userSocketMap.get(message.sender);
+  const recipientSocketId = userSocketMap.get(message.recipient);
+
+  const createdMessage = await Messages.create(message);
+
+  const messsageData = await Messages.findById(createdMessage._id)
+    .populate(
+      "sender",
+      "personal_info.username personal_info.profile_img personal_info.fullname"
+    )
+    .populate(
+      "recipient",
+      "personal_info.username personal_info.profile_img personal_info.fullname"
+    );
+
+  if (recipientSocketId) {
+    io.to(recipientSocketId).emit("receivedMessage", messsageData);
+  }
+  if (senderSocketId) {
+    io.to(senderSocketId).emit("receivedMessage", messsageData);
+  }
+};
+
+io.on("connection", (socket) => {
+  const userId = socket.handshake.query.userId;
+  socket.join("global");
+
+  if (userId) {
+    userSocketMap.set(userId, socket.id);
+    console.log(`User connected ${userId} with socketId: ${socket.id}`);
+  } else {
+    console.log("User ID not provided during connection");
+  }
+  
+
+  socket.on(
+    "sendGroupMessage",
+    async ({ content, senderId, messageType, fileUrl, room }) => {
+      const msg = await Messages.create({
+        content,
+        sender: senderId,
+        recipient: null, // Group messages typically don’t have a single recipient
+        room: room || "global", // Fallback to "global" if no room is specified
+        messageType,
+        fileUrl,
+      });
+
+      const populated = await msg.populate("sender", "personal_info.fullname");
+      io.to(room || "global").emit("receiveGroupMessage", populated);
+    }
+  );
+  socket.on("sendMessage", sendMessage);
+  socket.on("disconnect", () => disconnect(socket));
 });

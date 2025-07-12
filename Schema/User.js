@@ -135,6 +135,10 @@ const userSchema = mongoose.Schema(
       ref: "blogs",
       default: [],
     },
+    lastSeen: {
+      type: Date,
+      default: null,
+    },
   },
   {
     timestamps: {
