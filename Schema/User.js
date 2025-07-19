@@ -137,8 +137,10 @@ const userSchema = mongoose.Schema(
     },
     lastSeen: {
       type: Date,
-      default: null,
+      default: Date.now,
     },
+    resetPasswordToken: String,
+    resetPasswordExpiresAt: Date,
   },
   {
     timestamps: {

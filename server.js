@@ -20,6 +20,9 @@ import { startOfWeek, endOfWeek } from "date-fns";
 import { Server as SocketIoServer } from "socket.io";
 import http from "http";
 import Messages from "./Schema/Messages.js";
+import Anonymous from "./Schema/Anonymous.js";
+import crypto from "crypto";
+import { Resend } from "resend";
 
 dotenv.config();
 
@@ -1720,6 +1723,172 @@ server.post("/get-contacts", verifyJwt, async (req, res) => {
   }
 });
 
+server.post("/get-anonymous", async (req, res) => {
+  let { page = 1 } = req.body;
+  let maxLimit = 5;
+  let skipDocs = (page - 1) * maxLimit;
+
+  try {
+    const messages = await Anonymous.find()
+      .skip(skipDocs)
+      .limit(maxLimit)
+      .sort({ createdAt: -1 });
+
+    const onlineCount = userSocketMap.size;
+    const totalMessages = await Anonymous.countDocuments();
+
+    // Use date-fns to get this week's Monday (start) and Sunday (end)
+    const now = new Date();
+    const weekStart = startOfWeek(now, { weekStartsOn: 1 }); // Monday
+    const weekEnd = endOfWeek(now, { weekStartsOn: 1 }); // Sunday
+
+    const weeklyMessages = await Anonymous.countDocuments({
+      createdAt: { $gte: weekStart, $lte: weekEnd },
+    });
+
+    return res.status(200).json({
+      messages,
+      totalMessages,
+      weeklyMessages,
+      onlineCount,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+//get shared message
+server.post("/anonymous/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const message = await Anonymous.findById(id);
+    if (!message) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+    res.json({ text: message });
+  } catch (error) {
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+//like the anonymous messages
+server.post("/like-anonymous", verifyJwt, async (req, res) => {
+  try {
+    const userId = req.user;
+    const { messageId } = req.body;
+    console.log(messageId);
+
+    if (!messageId) {
+      return res.status(400).json({ error: "Message ID is required" });
+    }
+
+    const message = await Anonymous.findById(messageId);
+    if (!message) {
+      return res.status(404).json({ error: "Message not found" });
+    }
+
+    // Optional: Check if user already liked it (if you store likedBy array)
+    if (message.likedBy.includes(userId)) {
+      return res.status(400).json({ error: "Already liked" });
+    }
+
+    // Increment likes
+    message.likes = (message.likes || 0) + 1;
+    // Optionally add user to likedBy
+    message.likedBy.push(userId);
+
+    await message.save();
+
+    return res.status(200).json({ message: "Liked successfully" });
+  } catch (error) {
+    console.error("Like error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+//forgot-password
+server.post("/forgot-password", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const user = await User.findOne({ "personal_info.email": email });
+    if (!user) {
+      return res.status(404).json({ error: "user not found" });
+    }
+
+    const resetToken = crypto.randomBytes(20).toString("hex");
+    const resetTokenExpiresAt = Date.now() + 24 * 60 * 60 * 1000; //i hour
+
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpiresAt = resetTokenExpiresAt;
+
+    await user.save();
+
+    const resetLink = `${process.env.VITE_CLIENT_DOMAIN}/reset-password/${resetToken}`;
+    const resend = new Resend(process.env.RESEND_API_KEY);
+
+    await resend.emails.send({
+      from: "onboarding@resend.dev",
+      to: email,
+      subject: "Reset your password",
+      html: `
+        <p>Hello,</p>
+        <p>Click the link below to reset your password:</p>
+        <a href="${resetLink}">Reset Password</a>
+        <p>If you didn’t request this, you can ignore this email.</p>
+      `,
+    });
+
+    res.status(200).json({
+      success: true,
+      message: "password reset link sent to your email",
+    });
+  } catch (error) {
+    console.log(`Error in sending email,${error}`);
+
+    res.status(500).json({
+      success: false,
+      message: "server error",
+    });
+  }
+});
+
+//reset-password
+server.post("/reset-password/:token", async (req, res) => {
+  try {
+    const { token } = req.params; // called it token because we put /:token in the post request
+    const { password } = req.body;
+
+    if (!passwordRegex.test(password)) {
+      return res.status(403).json({
+        error:
+          "Password should be 6 to 20 letters long with a numeric,1 lowercase and 1 uppercase letters ",
+      });
+    }
+    const user = await User.findOne({
+      resetPasswordToken: token,
+      resetPasswordExpiresAt: { $gt: Date.now() },
+    });
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid or expired token",
+      });
+    }
+    const hashedPassword = await bcrypt.hash(password, 10);
+    user.personal_info.password = hashedPassword;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpiresAt = undefined;
+    await user.save();
+    res
+      .status(200)
+      .json({ success: true, message: "password reset successsful" });
+  } catch (error) {
+    console.log("error in resetPassword", error);
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
 
 // server.post("/broadcast-message", verifyJwt, async (req, res) => {
 //   try {
@@ -1818,6 +1987,26 @@ const sendMessage = async (message) => {
   }
 };
 
+const AnonymousMessage = async ({ content, date, sender, likes, colors }) => {
+  try {
+    if (!content) {
+      return console.log("No content provided in anonymousMessage");
+    }
+    const messageData = await Anonymous.create({
+      content,
+      date,
+      sender,
+      likes,
+      colors,
+    });
+    io.emit("anonymousMessage", messageData);
+    return;
+  } catch (error) {
+    console.log(error);
+    return;
+  }
+};
+
 io.on("connection", (socket) => {
   const userId = socket.handshake.query.userId;
   socket.join("global");
@@ -1828,7 +2017,6 @@ io.on("connection", (socket) => {
   } else {
     console.log("User ID not provided during connection");
   }
-  
 
   socket.on(
     "sendGroupMessage",
@@ -1846,6 +2034,7 @@ io.on("connection", (socket) => {
       io.to(room || "global").emit("receiveGroupMessage", populated);
     }
   );
+  socket.on("anonymousMessage", AnonymousMessage);
   socket.on("sendMessage", sendMessage);
   socket.on("disconnect", () => disconnect(socket));
 });
