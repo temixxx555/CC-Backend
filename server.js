@@ -498,6 +498,34 @@ server.post("/search-dm", verifyJwt, (req, res) => {
     });
 });
 
+//get user info with id
+server.post("/get-user-info", verifyJwt, (req, res) => {
+  const { chatIdFromUrl } = req.body;
+
+  if (!chatIdFromUrl) {
+    return res.status(400).json({ error: "chatIdFromUrl is required" });
+  }
+
+  // Prevent fetching the current user's own info
+  if (chatIdFromUrl === req.user) {
+    return res.status(400).json({ error: "You cannot fetch your own info" });
+  }
+
+  User.findById(chatIdFromUrl)
+    .select(
+      "personal_info.fullname personal_info.profile_img personal_info.username _id"
+    )
+    .then((user) => {
+      if (!user) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      return res.status(200).json({ user });
+    })
+    .catch((err) => {
+      return res.status(500).json({ error: err.message });
+    });
+});
+
 //follow a user
 server.post("/follows/:id", verifyJwt, async (req, res) => {
   try {
@@ -1581,7 +1609,6 @@ server.get("/all-time-winners", async (req, res) => {
 });
 
 //get messages dm
-
 server.post("/get-messages", verifyJwt, async (req, res) => {
   try {
     const { id, isGroup = false } = req.body; // Add isGroup flag to differentiate
@@ -1770,7 +1797,6 @@ server.post("/anonymous/:id", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
 
 //like the anonymous messages
 server.post("/like-anonymous", verifyJwt, async (req, res) => {
