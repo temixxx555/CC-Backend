@@ -378,6 +378,51 @@ server.post("/latest-blog", (req, res) => {
       return res.status(500).json({ err: err.message });
     });
 });
+server.post("/for-you", verifyJwt, async (req, res) => {
+  try {
+    let userId = req.user;
+    let { page = 1 } = req.body;
+    let maxLimit = 5;
+
+    let user = await User.findById(userId).select("following");
+    let following = user?.following || [];
+
+    let blogs = await Blog.find({
+      draft: false,
+      author: { $in: following },
+    })
+      .populate(
+        "author",
+        "personal_info.profile_img personal_info.username personal_info.fullname -_id"
+      )
+      .sort({ publishedAt: -1 })
+      .select("blog_id title des banner activity tags publishedAt -_id ")
+      .skip((page - 1) * maxLimit)
+      .limit(maxLimit);
+
+    return res.status(200).json({ blogs });
+  } catch (error) {
+    console.log(error);
+    return res.status(500).json({error:"Internal server error"})
+    
+  }
+});
+server.post("/all-latest-feed", verifyJwt,async (req, res) => {
+    let userId = req.user;
+ let user = await User.findById(userId).select("following");
+    let following = user?.following || [];
+
+  Blog.countDocuments({   draft: false,
+      author: { $in: following }, })
+    .then((count) => {
+      return res.status(200).json({ totalDocs: count });
+    })
+    .catch((err) => {
+      console.log(err.message);
+      return res.status(500).json({ error: err.message });
+    });
+});
+
 server.post("/all-latest-blogs-count", (req, res) => {
   Blog.countDocuments({ draft: false })
     .then((count) => {
@@ -1581,7 +1626,7 @@ server.get("/get-winners", async (req, res) => {
         "posted_by",
         "personal_info.username personal_info.profile_img personal_info.fullname"
       )
-      .limit(3); // Get top 3 winners
+      .limit(4); // Get top 4 winners
 
     return res.status(200).json({ winners });
   } catch (error) {
@@ -1752,7 +1797,7 @@ server.post("/get-contacts", verifyJwt, async (req, res) => {
 
 server.post("/get-anonymous", async (req, res) => {
   let { page = 1 } = req.body;
-  let maxLimit = 5;
+  let maxLimit = 20;
   let skipDocs = (page - 1) * maxLimit;
 
   try {
