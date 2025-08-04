@@ -1901,7 +1901,7 @@ server.post("/forgot-password", async (req, res) => {
     const resend = new Resend(process.env.RESEND_API_KEY);
 
     await resend.emails.send({
-      from: "onboarding@resend.dev",
+      from: "support@campus-connect.xyz",
       to: email,
       subject: "Reset your password",
       html: `
