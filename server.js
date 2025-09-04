@@ -1708,6 +1708,31 @@ server.post("/get-messages", verifyJwt, async (req, res) => {
     return res.status(500).json({ error: "Internal server error" });
   }
 });
+//get message notification
+server.get("/has-unread", verifyJwt, async (req, res) => {
+  try {
+    // Convert req.user to ObjectId
+    const userId = mongoose.isValidObjectId(req.user)
+      ? new mongoose.Types.ObjectId(req.user)
+      : null;
+    if (!userId) {
+      return res.status(401).json({ status: "error", error: "Invalid user authentication" });
+    }
+
+    // Query for any unread messages where the user is the recipient
+    const query = {
+      recipient: userId,
+      isRead: false,
+    };
+
+    const hasUnread = await Messages.exists(query);
+
+    return res.status(200).json({  hasUnread: !!hasUnread });
+  } catch (error) {
+    console.error("Error checking unread messages:", error.message);
+    return res.status(500).json({ status: "error", error: "Internal server error" });
+  }
+});
 
 //get the contacts
 server.post("/get-contacts", verifyJwt, async (req, res) => {
