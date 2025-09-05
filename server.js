@@ -54,7 +54,7 @@ server.use(express.json());
 const allowedOrigins = [
   "http://localhost:5173", // Local development
   "https://blogs-trends.vercel.app",
-  "https://campus-connect.xyz"//main deployment
+  "https://campus-connect.xyz", //main deployment
 ];
 
 server.use(
@@ -366,7 +366,7 @@ server.post("/latest-blog", (req, res) => {
   Blog.find({ draft: false })
     .populate(
       "author",
-      "personal_info.profile_img personal_info.username personal_info.fullname -_id"
+      "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
     )
     .sort({ publishedAt: -1 })
     .select("blog_id title des banner activity tags publishedAt -_id")
@@ -394,7 +394,7 @@ server.post("/for-you", verifyJwt, async (req, res) => {
     })
       .populate(
         "author",
-        "personal_info.profile_img personal_info.username personal_info.fullname -_id"
+        "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
       )
       .sort({ publishedAt: -1 })
       .select("blog_id title des banner activity tags publishedAt -_id ")
@@ -404,17 +404,15 @@ server.post("/for-you", verifyJwt, async (req, res) => {
     return res.status(200).json({ blogs });
   } catch (error) {
     console.log(error);
-    return res.status(500).json({error:"Internal server error"})
-    
+    return res.status(500).json({ error: "Internal server error" });
   }
 });
-server.post("/all-latest-feed", verifyJwt,async (req, res) => {
-    let userId = req.user;
- let user = await User.findById(userId).select("following");
-    let following = user?.following || [];
+server.post("/all-latest-feed", verifyJwt, async (req, res) => {
+  let userId = req.user;
+  let user = await User.findById(userId).select("following");
+  let following = user?.following || [];
 
-  Blog.countDocuments({   draft: false,
-      author: { $in: following }, })
+  Blog.countDocuments({ draft: false, author: { $in: following } })
     .then((count) => {
       return res.status(200).json({ totalDocs: count });
     })
@@ -440,7 +438,7 @@ server.get("/trending-blogs", (req, res) => {
   Blog.find({ draft: false })
     .populate(
       "author",
-      "personal_info.profile_img personal_info.username personal_info.fullname -_id"
+      "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
     )
     .sort({
       "activity.total_read": -1,
@@ -470,7 +468,7 @@ server.post("/search-blogs", (req, res) => {
   Blog.find(findQuery)
     .populate(
       "author",
-      "personal_info.profile_img personal_info.username personal_info.fullname -_id"
+      "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
     )
     .sort({ publishedAt: -1 })
     .select("blog_id title des banner activity tags publishedAt -_id")
@@ -633,7 +631,7 @@ server.get("/:username/:type", async (req, res) => {
       "personal_info.username": username,
     }).populate({
       select:
-        "personal_info.profile_img personal_info.username personal_info.fullname -_id",
+        "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id",
       path: type,
     });
     if (!user) {
@@ -1023,7 +1021,7 @@ server.get("/leaderboard", async (req, res) => {
     if (type === "streak") {
       const rawUsers = await User.find(
         {},
-        "personal_info.fullname personal_info.username personal_info.profile_img streak"
+        "personal_info.fullname personal_info.username personal_info.profile_img  personal_info.isVerified streak"
       ).sort({ "streak.count": -1, "account_info.total_posts": -1 });
 
       const today = new Date().toISOString().split("T")[0];
@@ -1049,6 +1047,7 @@ server.get("/leaderboard", async (req, res) => {
             _id: user._id,
             fullname: user.personal_info.fullname,
             username: user.personal_info.username,
+            isVerified: user.personal_info.isVerified,
             profile_img: user.personal_info.profile_img,
             streak: validStreak,
           };
@@ -1062,6 +1061,7 @@ server.get("/leaderboard", async (req, res) => {
             fullname: "$personal_info.fullname",
             username: "$personal_info.username",
             profile_img: "$personal_info.profile_img",
+            isVerified: "$personal_info.isVerified",
             followersCount: { $size: { $ifNull: ["$followers", []] } },
           },
         },
@@ -1716,7 +1716,9 @@ server.get("/has-unread", verifyJwt, async (req, res) => {
       ? new mongoose.Types.ObjectId(req.user)
       : null;
     if (!userId) {
-      return res.status(401).json({ status: "error", error: "Invalid user authentication" });
+      return res
+        .status(401)
+        .json({ status: "error", error: "Invalid user authentication" });
     }
 
     // Query for any unread messages where the user is the recipient
@@ -1727,10 +1729,12 @@ server.get("/has-unread", verifyJwt, async (req, res) => {
 
     const hasUnread = await Messages.exists(query);
 
-    return res.status(200).json({  hasUnread: !!hasUnread });
+    return res.status(200).json({ hasUnread: !!hasUnread });
   } catch (error) {
     console.error("Error checking unread messages:", error.message);
-    return res.status(500).json({ status: "error", error: "Internal server error" });
+    return res
+      .status(500)
+      .json({ status: "error", error: "Internal server error" });
   }
 });
 
@@ -1802,6 +1806,7 @@ server.post("/get-contacts", verifyJwt, async (req, res) => {
           email: "$contactInfo.personal_info.email",
           firstName: "$contactInfo.personal_info.fullname",
           profileImage: "$contactInfo.personal_info.profile_img",
+          isVerified: "$contactInfo.personal_info.isVerified",
           username: "$contactInfo.personal_info.username",
           lastSeen: "$contactInfo.lastSeen",
         },

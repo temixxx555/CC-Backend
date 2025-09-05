@@ -68,6 +68,10 @@ const userSchema = mongoose.Schema(
           }`;
         },
       },
+      isVerifed:{
+        type:Boolean,
+        default:false
+      }
     },
     streak: {
       count: {
