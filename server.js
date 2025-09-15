@@ -362,7 +362,7 @@ server.get("/all-users", async (req, res) => {
 //get the blog
 server.post("/latest-blog", (req, res) => {
   let { page } = req.body;
-  let maxLimit = 5;
+  let maxLimit = 20;
   Blog.find({ draft: false })
     .populate(
       "author",
@@ -383,7 +383,7 @@ server.post("/for-you", verifyJwt, async (req, res) => {
   try {
     let userId = req.user;
     let { page = 1 } = req.body;
-    let maxLimit = 5;
+    let maxLimit = 20;
 
     let user = await User.findById(userId).select("following");
     let following = user?.following || [];
@@ -446,7 +446,7 @@ server.get("/trending-blogs", (req, res) => {
       publishedAt: -1,
     })
     .select("blog_id title des banner activity tags publishedAt -_id")
-    .limit(5)
+    .limit(15)
     .then((blogs) => {
       return res.status(200).json({ blogs });
     })
