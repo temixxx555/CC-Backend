@@ -4,7 +4,7 @@ const notificationSchema = mongoose.Schema(
   {
     type: {
       type: String,
-      enum: ["like", "comment", "reply", "followed"],
+      enum: ["like", "comment", "reply", "followed", "info"],
       required: true,
     },
     blog: {
@@ -14,13 +14,21 @@ const notificationSchema = mongoose.Schema(
     },
     notification_for: {
       type: Schema.Types.ObjectId,
-      required: true,
+      default: null,
       ref: "users",
     },
     user: {
       type: Schema.Types.ObjectId,
-      required: true,
+      default: null,
       ref: "users",
+    },
+    title: {
+      type: String,
+      default: "",
+    },
+    message: {
+      type: String,
+      default: "",
     },
     comment: {
       type: Schema.Types.ObjectId,
@@ -38,6 +46,10 @@ const notificationSchema = mongoose.Schema(
       default: null,
     },
     seen: {
+      type: Boolean,
+      default: false,
+    },
+    isGlobal: {
       type: Boolean,
       default: false,
     },

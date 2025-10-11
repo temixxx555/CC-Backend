@@ -23,6 +23,7 @@ import Messages from "./Schema/Messages.js";
 import Anonymous from "./Schema/Anonymous.js";
 import crypto from "crypto";
 import { Resend } from "resend";
+import { title } from "process";
 
 dotenv.config();
 
@@ -362,7 +363,7 @@ server.get("/all-users", async (req, res) => {
 //get the blog
 server.post("/latest-blog", (req, res) => {
   let { page } = req.body;
-  let maxLimit = 20;
+  let maxLimit = 30;
   Blog.find({ draft: false })
     .populate(
       "author",
@@ -383,7 +384,7 @@ server.post("/for-you", verifyJwt, async (req, res) => {
   try {
     let userId = req.user;
     let { page = 1 } = req.body;
-    let maxLimit = 20;
+    let maxLimit = 30;
 
     let user = await User.findById(userId).select("following");
     let following = user?.following || [];
@@ -446,7 +447,7 @@ server.get("/trending-blogs", (req, res) => {
       publishedAt: -1,
     })
     .select("blog_id title des banner activity tags publishedAt -_id")
-    .limit(15)
+    .limit(10)
     .then((blogs) => {
       return res.status(200).json({ blogs });
     })
@@ -1243,7 +1244,7 @@ server.post("/add-comment", verifyJwt, async (req, res) => {
 
 server.post("/get-blog-comments", (req, res) => {
   let { blog_id, skip } = req.body;
-  let maxLimit = 5;
+  let maxLimit = 10;
 
   Comment.find({ blog_id, isReply: false })
     .populate(
@@ -1357,9 +1358,14 @@ server.post("/delete-comment", verifyJwt, (req, res) => {
 server.get("/new-notification", verifyJwt, (req, res) => {
   let user_id = req.user;
   Notification.exists({
-    notification_for: user_id,
-    seen: false,
-    user: { $ne: user_id },
+    $or: [
+      {
+        notification_for: user_id,
+        seen: false,
+        user: { $ne: user_id },
+      },
+      { isGlobal: true, seen: false },
+    ],
   })
     .then((result) => {
       if (result) {
@@ -1378,9 +1384,20 @@ server.get("/new-notification", verifyJwt, (req, res) => {
 server.post("/notifications", verifyJwt, (req, res) => {
   let user_id = req.user;
   let { page, filter, deletedDocCount } = req.body;
-  let maxLimit = 10;
+  let maxLimit = 20;
 
-  let findQuery = { notification_for: user_id, user: { $ne: user_id } };
+  // let findQuery = { notification_for: user_id, user: { $ne: user_id } };
+  const findQuery = {
+    $or: [
+      {
+        notification_for: user_id,
+        user: {
+          $ne: user_id,
+        },
+      },
+      { isGlobal: true },
+    ],
+  };
   let skipDocs = (page - 1) * maxLimit;
   if (filter != "all") {
     findQuery.type = filter;
@@ -1408,7 +1425,7 @@ server.post("/notifications", verifyJwt, (req, res) => {
       },
     })
     .sort({ createdAt: -1 })
-    .select("createdAt type seen reply")
+    .select("createdAt type seen reply title message isGlobal")
     .then((notifications) => {
       Notification.updateMany(findQuery, { seen: true })
         .skip(skipDocs)
@@ -1419,6 +1436,25 @@ server.post("/notifications", verifyJwt, (req, res) => {
     .catch((err) => {
       return res.status(500).json({ error: err.message });
     });
+});
+
+//make an annoucement
+server.post("/make-annoucement", verifyJwt, async (req, res) => {
+  try {
+    let { title, message } = req.body;
+
+    let notification = new Notification({
+      type: "info",
+      title,
+      message,
+      isGlobal: true,
+      user: req.user,
+    });
+    await notification.save();
+    return res.status(200).json("notification saved successfully");
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 //count notifications
 server.post("/all-notifications-count", verifyJwt, (req, res) => {
@@ -1443,7 +1479,7 @@ server.post("/user-written-blogs", verifyJwt, (req, res) => {
   let user_id = req.user;
   let { page, draft, query, deletedDocCount } = req.body;
 
-  let maxLimit = 5;
+  let maxLimit = 10;
   let skipDocs = (page - 1) * maxLimit;
 
   if (deletedDocCount) {
@@ -1590,22 +1626,65 @@ server.get("/get-competition-images", async (req, res) => {
 //assign ranks
 server.post("/assign-ranks", async (req, res) => {
   try {
-    const { ranks } = req.body; // frontend sends: { challengeId: rank }
+    const { ranks } = req.body; // { challengeId: rank }
 
     if (!ranks || Object.keys(ranks).length === 0) {
       return res.status(400).json({ error: "No ranks provided" });
     }
+
+    // Prevent duplicate ranks
     const uniqueRanks = new Set(Object.values(ranks));
     if (uniqueRanks.size !== Object.keys(ranks).length) {
       return res.status(400).json({ error: "Duplicate ranks not allowed" });
     }
+
+    // Update each challenge with its rank
     const updates = Object.entries(ranks).map(([id, rank]) =>
       Challenge.findByIdAndUpdate(id, { $set: { rank } })
     );
 
     await Promise.all(updates);
+    const start = startOfWeek(new Date(), { weekStartsOn: 1 }); // Monday
+    const end = endOfWeek(new Date(), { weekStartsOn: 1 });
+    // 🔹 Find all winners (1st, 2nd, 3rd)
+    const winners = await Challenge.find({
+      createdAt: { $gte: start, $lte: end },
+      rank: { $gt: 0, $lte: 3 },
+    })
+      .sort({ rank: 1 })
+      .populate(
+        "posted_by",
+        "personal_info.username personal_info.fullname personal_info.profile_img"
+      );
 
-    return res.status(200).json({ message: "Ranks assigned successfully" });
+    // Build the message for the global notification
+    let message = "";
+    winners.forEach((winner) => {
+      if (winner.rank === 1)
+        message += `🏆 1st Place: ${winner.posted_by.personal_info.fullname} (@${winner.posted_by.personal_info.username})\n`;
+      else if (winner.rank === 2)
+        message += `🥈 2nd Place: ${winner.posted_by.personal_info.fullname} (@${winner.posted_by.personal_info.username})\n`;
+      else if (winner.rank === 3)
+        message += `🥉 3rd Place: ${winner.posted_by.personal_info.fullname} (@${winner.posted_by.personal_info.username})\n`;
+    });
+
+    if (!message) message = "No winners found.";
+
+    // 🔹 Create a global notification
+    const notification = new Notification({
+      type: "info",
+      title: "🎉 Winners of the Face of The Week Challenge!",
+      message,
+      isGlobal: true,
+      user: req.user, // Admin who created it
+    });
+
+    await notification.save();
+
+    return res.status(200).json({
+      message: "Ranks assigned and winners announced successfully 🎉",
+      winners,
+    });
   } catch (error) {
     console.error("Error assigning ranks:", error);
     return res.status(500).json({ error: "Internal server error" });
