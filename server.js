@@ -370,7 +370,7 @@ server.post("/latest-blog", (req, res) => {
       "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
     )
     .sort({ publishedAt: -1 })
-    .select("blog_id title des banner activity tags publishedAt -_id")
+    .select("blog_id title content des banner activity tags publishedAt -_id")
     .skip((page - 1) * maxLimit)
     .limit(maxLimit)
     .then((blogs) => {
