@@ -54,7 +54,7 @@ let passwordRegex = /^(?=.*\d)(?=.*[a-z])(?=.*[A-Z]).{6,20}$/;
 server.use(express.json());
 const allowedOrigins = [
   "http://localhost:5173", // Local development
-  "https://blogs-trends.vercel.app",
+  "https://www.campus-connect.xyz",
   "https://campus-connect.xyz", //main deployment
 ];
 
@@ -398,7 +398,7 @@ server.post("/for-you", verifyJwt, async (req, res) => {
         "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
       )
       .sort({ publishedAt: -1 })
-      .select("blog_id title des banner activity tags publishedAt -_id ")
+      .select("blog_id title des content banner activity tags publishedAt -_id ")
       .skip((page - 1) * maxLimit)
       .limit(maxLimit);
 
@@ -447,7 +447,7 @@ server.get("/trending-blogs", (req, res) => {
       publishedAt: -1,
     })
     .select("blog_id title des banner activity tags publishedAt -_id")
-    .limit(10)
+    .limit(20)
     .then((blogs) => {
       return res.status(200).json({ blogs });
     })
@@ -472,7 +472,7 @@ server.post("/search-blogs", (req, res) => {
       "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
     )
     .sort({ publishedAt: -1 })
-    .select("blog_id title des banner activity tags publishedAt -_id")
+    .select("blog_id title des content banner activity tags publishedAt -_id")
     .skip((page - 1) * maxLimit)
     .limit(maxLimit)
     .then((blogs) => {
