@@ -24,6 +24,7 @@ import Anonymous from "./Schema/Anonymous.js";
 import crypto from "crypto";
 import { Resend } from "resend";
 import { title } from "process";
+import Token from "./Schema/Token.js";
 
 dotenv.config();
 
@@ -398,7 +399,9 @@ server.post("/for-you", verifyJwt, async (req, res) => {
         "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
       )
       .sort({ publishedAt: -1 })
-      .select("blog_id title des content banner activity tags publishedAt -_id ")
+      .select(
+        "blog_id title des content banner activity tags publishedAt -_id "
+      )
       .skip((page - 1) * maxLimit)
       .limit(maxLimit);
 
@@ -587,7 +590,12 @@ server.post("/follows/:id", verifyJwt, async (req, res) => {
       return res.status(400).json({ message: "User not found" });
     }
     const isFollowing = currentUser.following.includes(id);
+    const user = await User.findById(req.user).select(
+      "personal_info.fullname personal_info.username"
+    );
 
+    // 3️⃣ Get tokens of the blog author
+    const tokens = await Token.find({ user: id }).select("token -_id");
     if (isFollowing) {
       //unfollow the user
       await Promise.all([
@@ -609,6 +617,40 @@ server.post("/follows/:id", verifyJwt, async (req, res) => {
         seen: false,
       });
 
+      const tokenList = tokens.map((t) => t.token);
+
+      if (tokenList.length > 0) {
+        // 4️⃣ Build the notification message
+        const message = {
+          notification: {
+            title: `${user.personal_info.fullname || user.personal_info.username} just followed You`,
+            body: "Your just got a new Follower",
+          },
+          data: {
+            url: process.env.VITE_CLIENT_DOMAIN + "/dashboard/notifications", // ✅ accessible on client as payload.data.link
+          },
+          tokens: tokenList,
+        };
+
+        // 5️⃣ Send push notification
+        const response = await admin.messaging().sendEachForMulticast(message);
+
+        console.log(
+          "Push notification detailed response:",
+          JSON.stringify(response, null, 2)
+        );
+
+        // 🔄 Cleanup invalid tokens
+        response.responses.forEach(async (r, i) => {
+          if (
+            !r.success &&
+            ["InvalidRegistration", "NotRegistered"].includes(r.error.code)
+          ) {
+            await Token.deleteOne({ token: tokenList[i] });
+            console.log("Deleted invalid token:", tokenList[i]);
+          }
+        });
+      }
       return res.status(200).json({ following: true });
     }
   } catch (error) {
@@ -1115,36 +1157,91 @@ server.post("/get-blog", (req, res) => {
 });
 
 //like route
-server.post("/like-blog", verifyJwt, (req, res) => {
-  let user_id = req.user;
+server.post("/like-blog", verifyJwt, async (req, res) => {
+  try {
+    const user_id = req.user; // ID of the user who liked the blog
+    const { _id, islikedByUser } = req.body;
+    const incremental = !islikedByUser ? 1 : -1;
 
-  let { _id, islikedByUser } = req.body;
-  let incremental = !islikedByUser ? 1 : -1;
+    // Update blog like count
+    const blog = await Blog.findOneAndUpdate(
+      { _id },
+      { $inc: { "activity.total_likes": incremental } },
+      { new: true }
+    );
 
-  Blog.findOneAndUpdate(
-    { _id },
-    { $inc: { "activity.total_likes": incremental } }
-  ).then((blog) => {
+    if (!blog) return res.status(404).json({ error: "Blog not found" });
+
+    // When the user LIKES a blog
     if (!islikedByUser) {
-      let like = new Notification({
+      // 1️⃣ Save the like notification in DB
+      const like = new Notification({
         type: "like",
         blog: _id,
         notification_for: blog.author,
         user: user_id,
       });
-      like.save().then((notification) => {
-        return res.status(200).json({ liked_by_user: true });
-      });
-    } else {
-      Notification.findOneAndDelete({ user: user_id, type: "like", blog: _id })
-        .then((data) => {
-          return res.status(200).json({ liked_by_user: false });
-        })
-        .catch((err) => {
-          return res.status(500).json({ error: err.message });
+      await like.save();
+
+      // 2️⃣ Fetch the user info (who liked the blog)
+      const user = await User.findById(user_id).select(
+        "personal_info.fullname personal_info.username"
+      );
+
+      // 3️⃣ Get tokens of the blog author
+      const tokens = await Token.find({ user: blog.author }).select(
+        "token -_id"
+      );
+      const tokenList = tokens.map((t) => t.token);
+
+      if (tokenList.length > 0) {
+        // 4️⃣ Build the notification message
+        const message = {
+          notification: {
+            title: `${user.personal_info.fullname || user.personal_info.username} liked your blog ❤️`,
+            body: "Your blog just received a new like!",
+          },
+          data: {
+            url: process.env.VITE_CLIENT_DOMAIN + "/dashboard/notifications", // ✅ accessible on client as payload.data.link
+          },
+          tokens: tokenList,
+        };
+
+        // 5️⃣ Send push notification
+        const response = await admin.messaging().sendEachForMulticast(message);
+
+        console.log(
+          "Push notification detailed response:",
+          JSON.stringify(response, null, 2)
+        );
+
+        // 🔄 Cleanup invalid tokens
+        response.responses.forEach(async (r, i) => {
+          if (
+            !r.success &&
+            ["InvalidRegistration", "NotRegistered"].includes(r.error.code)
+          ) {
+            await Token.deleteOne({ token: tokenList[i] });
+            console.log("Deleted invalid token:", tokenList[i]);
+          }
         });
+      }
+
+      return res.status(200).json({ liked_by_user: true });
+    } else {
+      // When the user UNLIKES
+      await Notification.findOneAndDelete({
+        user: user_id,
+        type: "like",
+        blog: _id,
+      });
+
+      return res.status(200).json({ liked_by_user: false });
     }
-  });
+  } catch (err) {
+    console.error("Error in like-blog:", err);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 server.post("/isliked-by-user", verifyJwt, (req, res) => {
@@ -1162,39 +1259,36 @@ server.post("/isliked-by-user", verifyJwt, (req, res) => {
 
 //comments route
 server.post("/add-comment", verifyJwt, async (req, res) => {
-  let user_id = req.user;
-  let { _id, comment, blog_author, replying_to, notification_id } = req.body;
+  try {
+    const user_id = req.user;
+    const { _id, comment, blog_author, replying_to, notification_id } = req.body;
 
-  if (!comment.length) {
-    return res
-      .status(403)
-      .json({ error: "Write something to leave a comment" });
-  }
-
-  // 🧠 If replying, validate parent exists before continuing
-  let replyingToCommentDoc = null;
-  if (replying_to) {
-    replyingToCommentDoc = await Comment.findById(replying_to);
-    if (!replyingToCommentDoc) {
-      return res.status(404).json({ error: "Parent comment not found" });
+    if (!comment?.length) {
+      return res.status(403).json({ error: "Write something to leave a comment" });
     }
-  }
 
-  // ✅ Create the comment
-  const commentObj = new Comment({
-    blog_id: _id,
-    blog_author,
-    comment,
-    commented_by: user_id,
-    ...(replying_to && {
-      parent: replying_to,
-      isReply: true,
-    }),
-  });
+    // 🧩 If replying, ensure parent exists
+    let replyingToCommentDoc = null;
+    if (replying_to) {
+      replyingToCommentDoc = await Comment.findById(replying_to);
+      if (!replyingToCommentDoc) {
+        return res.status(404).json({ error: "Parent comment not found" });
+      }
+    }
 
-  commentObj.save().then(async (commentFile) => {
-    const { comment, commentedAt, children } = commentFile;
+    // ✅ Create new comment
+    const commentObj = new Comment({
+      blog_id: _id,
+      blog_author,
+      comment,
+      commented_by: user_id,
+      ...(replying_to && { parent: replying_to, isReply: true }),
+    });
 
+    const commentFile = await commentObj.save();
+    const { comment: commentText, commentedAt, children } = commentFile;
+
+    // 🔢 Update blog stats
     await Blog.findByIdAndUpdate(_id, {
       $push: { comments: commentFile._id },
       $inc: {
@@ -1203,6 +1297,7 @@ server.post("/add-comment", verifyJwt, async (req, res) => {
       },
     });
 
+    // 🔔 Create in-app notification
     const notificationObj = {
       type: replying_to ? "reply" : "comment",
       blog: _id,
@@ -1214,33 +1309,85 @@ server.post("/add-comment", verifyJwt, async (req, res) => {
       ...(replying_to && { replied_on_comment: replying_to }),
     };
 
-    // Push child to parent's children array if it's a reply
+    // 🧩 Update parent comment’s children if reply
     if (replying_to) {
       await Comment.findByIdAndUpdate(replying_to, {
         $push: { children: commentFile._id },
       });
+
       if (notification_id) {
-        Notification.findOneAndUpdate(
-          { _id: notification_id },
-          { reply: commentFile._id }
-        ).then((notification) => {
-          console.log("notification updated");
+        await Notification.findByIdAndUpdate(notification_id, {
+          reply: commentFile._id,
         });
+        console.log("notification updated");
       }
     }
 
     await new Notification(notificationObj).save();
     console.log("new notification created");
 
+    // 🔍 Get commenter info for notification title
+    const commenter = await User.findById(user_id).select(
+      "personal_info.fullname personal_info.username"
+    );
+
+    // 🧠 Determine who should receive this notification
+    const recipientId = replying_to
+      ? replyingToCommentDoc.commented_by
+      : blog_author;
+
+    // 🎯 Get recipient tokens
+    const tokens = await Token.find({ user: recipientId }).select("token -_id");
+    const tokenList = tokens.map((t) => t.token);
+
+    if (tokenList.length > 0) {
+      // 📲 Build push notification
+      const message = {
+        notification: {
+          title: `${commenter.personal_info.fullname || commenter.personal_info.username} commented on your blog 💬`,
+          body: replying_to
+            ? "They replied to your comment!"
+            : "You have a new comment on your blog.",
+        },
+        data: {
+          url: process.env.VITE_CLIENT_DOMAIN + "/dashboard/notifications",
+        },
+        webpush: {
+          fcmOptions: {
+            link: process.env.VITE_CLIENT_DOMAIN + "/dashboard/notifications",
+          },
+        },
+        tokens: tokenList,
+      };
+
+      // 🚀 Send via Firebase
+      const response = await admin.messaging().sendEachForMulticast(message);
+      console.log("Push notification detailed response:", JSON.stringify(response, null, 2));
+
+      // 🧹 Remove invalid tokens
+      for (let i = 0; i < response.responses.length; i++) {
+        const r = response.responses[i];
+        if (!r.success && ["messaging/registration-token-not-registered", "messaging/invalid-registration-token"].includes(r.error?.code)) {
+          await Token.deleteOne({ token: tokenList[i] });
+          console.log("Deleted invalid token:", tokenList[i]);
+        }
+      }
+    }
+
+    // ✅ Return comment info
     return res.status(200).json({
-      comment,
+      comment: commentText,
       commentedAt,
       _id: commentFile._id,
       user_id,
       children,
     });
-  });
+  } catch (error) {
+    console.error("Error in add-comment:", error.message);
+    return res.status(500).json({ error: error.message });
+  }
 });
+
 
 server.post("/get-blog-comments", (req, res) => {
   let { blog_id, skip } = req.body;
@@ -2068,6 +2215,46 @@ server.post("/reset-password/:token", async (req, res) => {
   } catch (error) {
     console.log("error in resetPassword", error);
     res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+server.post("/save-token", verifyJwt, async (req, res) => {
+  try {
+    const user_id = req.user; // from verifyJwt
+    const { token } = req.body;
+
+    if (!token) return res.status(400).json({ error: "Token required" });
+
+    const exists = await Token.findOne({ token, user: user_id });
+    if (!exists) {
+      await Token.create({ user: user_id, token });
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Failed to save token" });
+  }
+});
+server.post("/send-notification", async (req, res) => {
+  const { title, body } = req.body;
+  const tokens = await Token.find().select("token -_id");
+  const tokenList = tokens.map((t) => t.token);
+
+  if (tokenList.length === 0)
+    return res.status(400).json({ error: "No tokens" });
+
+  const message = {
+    notification: { title, body },
+    tokens: tokenList,
+  };
+
+  try {
+    const response = await admin.messaging().sendEachForMulticast(message);
+    res.json({ success: true, response });
+  } catch (err) {
+    console.error("Error sending message:", err);
+    res.status(500).json({ error: "Failed to send notification" });
   }
 });
 
