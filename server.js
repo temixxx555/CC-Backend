@@ -2335,9 +2335,10 @@ const sendMessage = async (message) => {
   const senderSocketId = userSocketMap.get(message.sender);
   const recipientSocketId = userSocketMap.get(message.recipient);
 
+  // 1️⃣ Create and fetch the message with sender/recipient populated
   const createdMessage = await Messages.create(message);
 
-  const messsageData = await Messages.findById(createdMessage._id)
+  const messageData = await Messages.findById(createdMessage._id)
     .populate(
       "sender",
       "personal_info.username personal_info.profile_img personal_info.fullname"
@@ -2347,13 +2348,52 @@ const sendMessage = async (message) => {
       "personal_info.username personal_info.profile_img personal_info.fullname"
     );
 
-  if (recipientSocketId) {
-    io.to(recipientSocketId).emit("receivedMessage", messsageData);
-  }
-  if (senderSocketId) {
-    io.to(senderSocketId).emit("receivedMessage", messsageData);
+  // 2️⃣ Emit the message via Socket.IO (real-time)
+  if (recipientSocketId) io.to(recipientSocketId).emit("receivedMessage", messageData);
+  if (senderSocketId) io.to(senderSocketId).emit("receivedMessage", messageData);
+
+  // 3️⃣ Send Push Notification via Firebase Admin SDK
+  try {
+    const tokens = await Token.find({ user: message.recipient }).select("token -_id");
+    const tokenList = tokens.map((t) => t.token);
+
+    if (tokenList.length > 0) {
+      const senderName =
+        messageData.sender.personal_info.fullname ||
+        messageData.sender.personal_info.username ||
+        "Someone";
+
+      const pushMessage = {
+        notification: {
+          title: `${senderName} sent you a message 💬`,
+          body: messageData.content || "You have a new message!",
+        },
+        data: {
+          url: process.env.VITE_CLIENT_DOMAIN + `/messages/${message.sender}`,
+        },
+        tokens: tokenList,
+      };
+
+      const response = await admin.messaging().sendEachForMulticast(pushMessage);
+
+      console.log("Push notification sent:", JSON.stringify(response, null, 2));
+
+      // 🔄 Clean up invalid tokens
+      response.responses.forEach(async (r, i) => {
+        if (
+          !r.success &&
+          ["InvalidRegistration", "NotRegistered"].includes(r.error.code)
+        ) {
+          await Token.deleteOne({ token: tokenList[i] });
+          console.log("Deleted invalid token:", tokenList[i]);
+        }
+      });
+    }
+  } catch (err) {
+    console.error("Error sending push notification:", err);
   }
 };
+
 
 const AnonymousMessage = async ({ content, date, sender, likes, colors }) => {
   try {
