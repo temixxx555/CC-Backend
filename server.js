@@ -804,7 +804,7 @@ server.post("/update-profile", verifyJwt, (req, res) => {
 });
 
 //to create the blog
-server.post("/create-blog", verifyJwt, (req, res) => {
+server.post("/create-blog", verifyJwt, async (req, res) => {
   let authorId = req.user;
 
   if (!req.body) {
@@ -844,7 +844,19 @@ server.post("/create-blog", verifyJwt, (req, res) => {
       });
     }
   }
+const tokens = await Token.find().select("token -_id");
+  const tokenList = tokens.map((t) => t.token);
 
+  if (tokenList.length === 0)
+    return res.status(400).json({ error: "No tokens" });
+
+  const message = {
+    notification: { title, body:"A new story of intrest has been posted !" },
+    tokens: tokenList,
+  };
+
+ 
+    const response = await admin.messaging().sendEachForMulticast(message);
   const today = new Date().toISOString().split("T")[0];
 
   User.findById(authorId)
