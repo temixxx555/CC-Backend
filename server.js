@@ -1936,8 +1936,8 @@ server.post("/get-messages", verifyJwt, async (req, res) => {
         "sender",
         "personal_info.username personal_info.profile_img personal_info.fullname"
       )
-      .sort({ createdAt: 1 })
-      .limit(req.body.limit || 50) // Default limit of 50 messages
+      .sort({ createdAt: -1 })
+      .limit(req.body.limit || 28) // Default limit of 50 messages
       .skip(req.body.skip || 0); // Support pagination
 
     return res.status(200).json({ messages });
