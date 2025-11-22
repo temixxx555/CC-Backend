@@ -113,12 +113,17 @@ const verifyJwt = (req, res, next) => {
 };
 
 const generateUsername = async (email) => {
-  let username = email.split("@")[0];
+  let username = email.split("@")[0].trim(); // remove spaces
+
   const isUsernameNotUnique = await User.exists({
     "personal_info.username": username,
-  }).then((result) => result);
-  isUsernameNotUnique ? (username += nanoid().substring(0, 5)) : "";
-  return username;
+  });
+
+  if (isUsernameNotUnique) {
+    username += nanoid().substring(0, 5);
+  }
+
+  return username.trim(); // extra safe
 };
 
 //pping
@@ -844,19 +849,18 @@ server.post("/create-blog", verifyJwt, async (req, res) => {
       });
     }
   }
-const tokens = await Token.find().select("token -_id");
+  const tokens = await Token.find().select("token -_id");
   const tokenList = tokens.map((t) => t.token);
 
   if (tokenList.length === 0)
     return res.status(400).json({ error: "No tokens" });
 
   const message = {
-    notification: { title, body:"A new story of intrest has been posted !" },
+    notification: { title, body: "A new story of intrest has been posted !" },
     tokens: tokenList,
   };
 
- 
-    const response = await admin.messaging().sendEachForMulticast(message);
+  const response = await admin.messaging().sendEachForMulticast(message);
   const today = new Date().toISOString().split("T")[0];
 
   User.findById(authorId)
@@ -1273,10 +1277,13 @@ server.post("/isliked-by-user", verifyJwt, (req, res) => {
 server.post("/add-comment", verifyJwt, async (req, res) => {
   try {
     const user_id = req.user;
-    const { _id, comment, blog_author, replying_to, notification_id } = req.body;
+    const { _id, comment, blog_author, replying_to, notification_id } =
+      req.body;
 
     if (!comment?.length) {
-      return res.status(403).json({ error: "Write something to leave a comment" });
+      return res
+        .status(403)
+        .json({ error: "Write something to leave a comment" });
     }
 
     // 🧩 If replying, ensure parent exists
@@ -1374,12 +1381,21 @@ server.post("/add-comment", verifyJwt, async (req, res) => {
 
       // 🚀 Send via Firebase
       const response = await admin.messaging().sendEachForMulticast(message);
-      console.log("Push notification detailed response:", JSON.stringify(response, null, 2));
+      console.log(
+        "Push notification detailed response:",
+        JSON.stringify(response, null, 2)
+      );
 
       // 🧹 Remove invalid tokens
       for (let i = 0; i < response.responses.length; i++) {
         const r = response.responses[i];
-        if (!r.success && ["messaging/registration-token-not-registered", "messaging/invalid-registration-token"].includes(r.error?.code)) {
+        if (
+          !r.success &&
+          [
+            "messaging/registration-token-not-registered",
+            "messaging/invalid-registration-token",
+          ].includes(r.error?.code)
+        ) {
           await Token.deleteOne({ token: tokenList[i] });
           console.log("Deleted invalid token:", tokenList[i]);
         }
@@ -1399,7 +1415,6 @@ server.post("/add-comment", verifyJwt, async (req, res) => {
     return res.status(500).json({ error: error.message });
   }
 });
-
 
 server.post("/get-blog-comments", (req, res) => {
   let { blog_id, skip } = req.body;
@@ -2361,12 +2376,16 @@ const sendMessage = async (message) => {
     );
 
   // 2️⃣ Emit the message via Socket.IO (real-time)
-  if (recipientSocketId) io.to(recipientSocketId).emit("receivedMessage", messageData);
-  if (senderSocketId) io.to(senderSocketId).emit("receivedMessage", messageData);
+  if (recipientSocketId)
+    io.to(recipientSocketId).emit("receivedMessage", messageData);
+  if (senderSocketId)
+    io.to(senderSocketId).emit("receivedMessage", messageData);
 
   // 3️⃣ Send Push Notification via Firebase Admin SDK
   try {
-    const tokens = await Token.find({ user: message.recipient }).select("token -_id");
+    const tokens = await Token.find({ user: message.recipient }).select(
+      "token -_id"
+    );
     const tokenList = tokens.map((t) => t.token);
 
     if (tokenList.length > 0) {
@@ -2386,7 +2405,9 @@ const sendMessage = async (message) => {
         tokens: tokenList,
       };
 
-      const response = await admin.messaging().sendEachForMulticast(pushMessage);
+      const response = await admin
+        .messaging()
+        .sendEachForMulticast(pushMessage);
 
       console.log("Push notification sent:", JSON.stringify(response, null, 2));
 
@@ -2405,7 +2426,6 @@ const sendMessage = async (message) => {
     console.error("Error sending push notification:", err);
   }
 };
-
 
 const AnonymousMessage = async ({ content, date, sender, likes, colors }) => {
   try {
