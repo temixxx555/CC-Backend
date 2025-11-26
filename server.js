@@ -25,6 +25,7 @@ import crypto from "crypto";
 import { Resend } from "resend";
 import { title } from "process";
 import Token from "./Schema/Token.js";
+import Tweets from "./Schema/Tweets.js";
 
 dotenv.config();
 
@@ -376,7 +377,7 @@ server.post("/latest-blog", (req, res) => {
       "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
     )
     .sort({ publishedAt: -1 })
-    .select("blog_id title content des banner activity tags publishedAt -_id")
+    .select("blog_id type title content des banner activity tags publishedAt _id")
     .skip((page - 1) * maxLimit)
     .limit(maxLimit)
     .then((blogs) => {
@@ -405,7 +406,7 @@ server.post("/for-you", verifyJwt, async (req, res) => {
       )
       .sort({ publishedAt: -1 })
       .select(
-        "blog_id title des content banner activity tags publishedAt -_id "
+        "blog_id title type des content banner activity tags publishedAt _id "
       )
       .skip((page - 1) * maxLimit)
       .limit(maxLimit);
@@ -480,7 +481,7 @@ server.post("/search-blogs", (req, res) => {
       "personal_info.profile_img personal_info.username personal_info.fullname personal_info.isVerified -_id"
     )
     .sort({ publishedAt: -1 })
-    .select("blog_id title des content banner activity tags publishedAt -_id")
+    .select("blog_id type title des content banner activity tags publishedAt _id")
     .skip((page - 1) * maxLimit)
     .limit(maxLimit)
     .then((blogs) => {
@@ -856,7 +857,7 @@ server.post("/create-blog", verifyJwt, async (req, res) => {
     return res.status(400).json({ error: "No tokens" });
 
   const message = {
-    notification: { title, body: "A new story of intrest has been posted !" },
+    notification: { title, body: "A new story of interest has been posted!" },
     tokens: tokenList,
   };
 
@@ -1172,6 +1173,67 @@ server.post("/get-blog", (req, res) => {
     });
 });
 
+// get the tweets to display
+// get the tweets to display (with comments)
+
+ server.post("/get-tweet", (req, res) => {
+  let { blog_id, draft, mode } = req.body;
+
+  let incremental = mode != "edit" ? 1 : 0;
+
+  Blog.findOneAndUpdate(
+    { blog_id },
+    { $inc: { "activity.total_reads": incremental } }
+  )
+    .populate(
+      "author",
+      "personal_info.fullname personal_info.username personal_info.profile_img personal_info.isVerified _id"
+    )
+    .populate({
+      path: "comments",
+      populate: {
+        path: "commented_by",
+        select: "personal_info.username personal_info.fullname personal_info.profile_img personal_info.isVerified _id",
+      },
+      options: { sort: { commentedAt: -1 } },
+    })
+    .populate({
+      path: "comments",
+      populate: {
+        path: "children",
+        populate: {
+          path: "commented_by",
+          select: "personal_info.username personal_info.fullname personal_info.profile_img personal_info.isVerified _id",
+        },
+        options: { sort: { commentedAt: -1 } },
+      },
+    })
+    .select("des banner activity publishedAt blog_id comments author")
+    .then((blog) => {
+      if (!blog) {
+        return res.status(404).json({ error: "Not found" });
+      }
+
+      return res.status(200).json({
+        tweet: {
+          _id: blog._id,
+          des: blog.des,
+          banner: blog.banner,
+          images: [],
+          activity: blog.activity,
+          publishedAt: blog.publishedAt,
+          author: blog.author,
+          comments: blog.comments || [], // ✅ Include comments
+        },
+      });
+    })
+    .catch((err) => {
+      console.error("Error in get-tweet:", err.message);
+      return res.status(500).json({ error: err.message });
+    });
+});
+
+
 //like route
 server.post("/like-blog", verifyJwt, async (req, res) => {
   try {
@@ -1243,7 +1305,7 @@ server.post("/like-blog", verifyJwt, async (req, res) => {
         });
       }
 
-      return res.status(200).json({ liked_by_user: true });
+      return res.status(200).json({ liked_by_user: true,total_likes: blog.activity.total_likes });
     } else {
       // When the user UNLIKES
       await Notification.findOneAndDelete({
@@ -1259,7 +1321,101 @@ server.post("/like-blog", verifyJwt, async (req, res) => {
     return res.status(500).json({ error: err.message });
   }
 });
+server.post("/like-tweet", verifyJwt, async (req, res) => {
+  try {
+    const user_id = req.user;
+    const { _id, islikedByUser } = req.body;
 
+    // Determine if we're liking or unliking
+    const isLiking = !islikedByUser;
+    const incremental = isLiking ? 1 : -1;
+
+    // Update blog like count
+    const blog = await Blog.findOneAndUpdate(
+      { _id },
+      { $inc: { "activity.total_likes": incremental } },
+      { new: true }
+    );
+
+    if (!blog) return res.status(404).json({ error: "Blog not found" });
+
+    // When the user LIKES a blog
+    if (isLiking) {
+      // Save the like notification in DB
+      const like = new Notification({
+        type: "like",
+        blog: _id,
+        notification_for: blog.author,
+        user: user_id,
+      });
+      await like.save();
+
+      // Fetch the user info (who liked the blog)
+      const user = await User.findById(user_id).select(
+        "personal_info.fullname personal_info.username"
+      );
+
+      // Get tokens of the blog author
+      const tokens = await Token.find({ user: blog.author }).select(
+        "token -_id"
+      );
+      const tokenList = tokens.map((t) => t.token);
+
+      if (tokenList.length > 0) {
+        const message = {
+          notification: {
+            title: `${user.personal_info.fullname || user.personal_info.username} liked your blog ❤️`,
+            body: "Your tweet just received a new like!",
+          },
+          data: {
+            url: process.env.VITE_CLIENT_DOMAIN + "/dashboard/notifications",
+          },
+          tokens: tokenList,
+        };
+
+        const response = await admin.messaging().sendEachForMulticast(message);
+
+        console.log(
+          "Push notification detailed response:",
+          JSON.stringify(response, null, 2)
+        );
+
+        // Cleanup invalid tokens
+        response.responses.forEach(async (r, i) => {
+          if (
+            !r.success &&
+            ["InvalidRegistration", "NotRegistered"].includes(r.error.code)
+          ) {
+            await Token.deleteOne({ token: tokenList[i] });
+            console.log("Deleted invalid token:", tokenList[i]);
+          }
+        });
+      }
+
+      // ✅ Always return total_likes
+      return res.status(200).json({
+        liked_by_user: true,
+        total_likes: blog.activity.total_likes,
+      });
+    } else {
+      // When the user UNLIKES
+      await Notification.findOneAndDelete({
+        user: user_id,
+        type: "like",
+        blog: _id,
+      });
+
+      // ✅ Always return total_likes
+      return res.status(200).json({
+        liked_by_user: false,
+        total_likes: blog.activity.total_likes,
+      });
+    }
+  } catch (err) {
+    console.error("Error in like-blog:", err);
+    return res.status(500).json({ error: err.message });
+  }
+});
 server.post("/isliked-by-user", verifyJwt, (req, res) => {
   let user_id = req.user;
 
@@ -1528,6 +1684,41 @@ server.post("/delete-comment", verifyJwt, (req, res) => {
   });
 });
 
+//delete tweet-comment
+server.post("/delete-tweet-comment", verifyJwt, async (req, res) => {
+  let user_id = req.user;
+  let { _id } = req.body;
+
+  try {
+    const comment = await Comment.findOne({ _id });
+
+    if (!comment) {
+      return res.status(404).json({ error: "Comment not found" });
+    }
+
+    // ✅ Convert to strings for comparison
+    const isCommentAuthor = comment.commented_by.toString() === user_id.toString();
+    const isBlogAuthor = comment.blog_author.toString() === user_id.toString();
+
+    if (isCommentAuthor || isBlogAuthor) {
+      deleteComments(_id);
+      return res.status(200).json({ status: "done" });
+    } else {
+      return res.status(403).json({ 
+        error: "You cannot delete this comment",
+        details: {
+          commentAuthor: comment.commented_by.toString(),
+          blogAuthor: comment.blog_author.toString(),
+          currentUser: user_id.toString()
+        }
+      });
+    }
+  } catch (error) {
+    console.error("Error in delete-comment:", error.message);
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 //for notifications
 server.get("/new-notification", verifyJwt, (req, res) => {
   let user_id = req.user;
@@ -1582,7 +1773,7 @@ server.post("/notifications", verifyJwt, (req, res) => {
   Notification.find(findQuery)
     .skip(skipDocs)
     .limit(maxLimit)
-    .populate("blog", "title blog_id")
+    .populate("blog", "title blog_id des")
     .populate(
       "user",
       "personal_info.fullname personal_info.username personal_info.profile_img "
@@ -1663,7 +1854,7 @@ server.post("/user-written-blogs", verifyJwt, (req, res) => {
     .skip(skipDocs)
     .limit(maxLimit)
     .sort({ publishedAt: -1 })
-    .select("title banner publishedAt blog_id activity des draft -_id")
+    .select("title banner type publishedAt blog_id activity des draft _id")
     .then((blogs) => {
       return res.status(200).json({ blogs });
     })
@@ -2477,4 +2668,63 @@ io.on("connection", (socket) => {
   socket.on("anonymousMessage", AnonymousMessage);
   socket.on("sendMessage", sendMessage);
   socket.on("disconnect", () => disconnect(socket));
+});
+
+
+
+
+// for tweeting
+server.post("/create-tweet", verifyJwt, async (req, res) => {
+  try {
+    const authorId = req.user; // From verifyJwt middleware
+    const { text, images, draft } = req.body;
+
+    // Validate
+    if (!text || !text.trim()) {
+      return res.status(400).json({ error: "Tweet text is required" });
+    }
+    if (text.length > 300) {
+      return res.status(400).json({ error: "Tweet text cannot exceed 300 characters" });
+    }
+    if (images && images.length > 1) {
+      return res.status(400).json({ error: "Only 1 image allowed per tweet" });
+    }
+
+    // Generate unique tweet ID
+    const blog_id = nanoid(12);
+
+    // Create tweet document
+    const tweet = new Blog({
+      type:"tweet",
+      blog_id,
+      des:text,
+      banner: images && images.length > 0 ? images[0] : undefined,
+      author: authorId,
+      draft: Boolean(draft),
+    });
+
+    await tweet.save();
+
+    return res.status(201).json({ blog_id });
+  } catch (err) {
+    console.error("Create Tweet Error:", err);
+    return res.status(500).json({ error: "Failed to create tweet" });
+  }
+});
+
+//get the tweets
+server.post("/get-tweets", async (req, res) => {
+  const { page = 1 } = req.body;
+
+  try {
+    const tweets = await Tweets.find()
+      .populate("author", "personal_info.fullname personal_info.username personal_info.profile_img")
+      .sort({ publishedAt: -1 })
+      .limit(20)
+      .skip((page - 1) * 20);
+
+    res.status(200).json({ tweets });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
